@@ -12,7 +12,6 @@ export default function WalkingTrackerScreen() {
   const [isTracking, setIsTracking] = useState(false);
   const [status, setStatus] = useState('Ready');
 
-  // Listen for step updates
   useEffect(() => {
     const subscription = eventEmitter.addListener('StepCounterUpdate', (data) => {
       setSteps(Math.round(data));
@@ -20,71 +19,106 @@ export default function WalkingTrackerScreen() {
     return () => subscription?.remove();
   }, []);
 
-  // Auto-request permission on mount
   useEffect(() => {
-    requestPermission();
+    requestAllPermissions();
   }, []);
 
-  const requestPermission = async () => {
-    if (Platform.OS === 'android' && Platform.Version >= 29) {
-      try {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
-          {
-            title: 'Step Counter Permission',
-            message: 'Allow step counting?',
-            buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
-          }
+  const requestAllPermissions = async () => {
+    if (Platform.OS !== 'android') {
+      setStatus('✅ Ready (iOS)');
+      return true;
+    }
+
+    const permissions = [];
+
+    // Android 13+ needs notification permission
+    if (Platform.Version >= 33) {
+      permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+    }
+
+    // Android 10+ needs activity recognition
+    if (Platform.Version >= 29) {
+      permissions.push(PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION);
+    }
+
+    if (permissions.length === 0) {
+      setStatus('✅ Ready');
+      return true;
+    }
+
+    try {
+      const results = await PermissionsAndroid.requestMultiple(permissions);
+      
+      const allGranted = Object.values(results).every(
+        result => result === PermissionsAndroid.RESULTS.GRANTED
+      );
+
+      if (allGranted) {
+        setStatus('✅ Permissions Granted');
+        return true;
+      } else {
+        setStatus('⚠️ Some Permissions Denied');
+        Alert.alert(
+          'Permissions Required',
+          'Please grant all permissions for step tracking to work properly.',
+          [{ text: 'OK' }]
         );
-        if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-          setStatus('✅ Permission Granted');
-        } else {
-          setStatus('❌ Permission Denied');
-        }
-      } catch (err) {
-        setStatus('⚠️ Permission Error');
+        return false;
       }
-    } else {
-      setStatus('✅ Permission OK');
+    } catch (err) {
+      console.error('Permission error:', err);
+      setStatus('❌ Permission Error');
+      return false;
     }
   };
-    const toggleTracking = async () => {
+
+  const toggleTracking = async () => {
     try {
-        if (isTracking) {
-        // Stop EVERYTHING
+      if (isTracking) {
+        // Stop tracking
+        await StepCounter.stopBackgroundService();
         StepCounter.stopStepCounter();
-        StepCounter.stopBackgroundService();
         setIsTracking(false);
         setStatus('⏸️ Stopped');
-        } else {
-        // Permission check first
-        if (Platform.OS === 'android' && Platform.Version >= 29) {
-            const granted = await PermissionsAndroid.check(
-            PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION
-            );
-            if (!granted) {
-            const result = await PermissionsAndroid.request(
-                PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION
-            );
-            if (result !== PermissionsAndroid.RESULTS.GRANTED) {
-                Alert.alert('Permission Required');
-                return;
-            }
-            }
+      } else {
+        // Check permissions first
+        const granted = await requestAllPermissions();
+        if (!granted) {
+          Alert.alert('Permissions Required', 'Please enable all permissions to continue');
+          return;
         }
-        
-        // ✅ START BOTH: Foreground + Background Service
+
+        // Start foreground sensor
         StepCounter.startStepCounter();
-        StepCounter.startBackgroundService();  // ← THIS MAKES NOTIFICATION APPEAR
-        setIsTracking(true);
-        setStatus('🔄 Background Active + Notification');
+
+        // Start background service
+        try {
+          await StepCounter.startBackgroundService();
+          setIsTracking(true);
+          setStatus('🔄 Tracking Active');
+        } catch (error) {
+          console.error('Service start error:', error);
+          Alert.alert(
+            'Service Start Failed',
+            'Please keep the app open while starting tracking on Android 14+',
+            [
+              {
+                text: 'OK',
+                onPress: () => {
+                  StepCounter.stopStepCounter();
+                  setStatus('❌ Failed to Start');
+                }
+              }
+            ]
+          );
         }
+      }
     } catch (error) {
-        Alert.alert('Error', error.message);
+      console.error('Tracking error:', error);
+      Alert.alert('Error', error.message || 'Failed to toggle tracking');
     }
-    };
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>🏃 Walking Tracker</Text>
@@ -103,7 +137,13 @@ export default function WalkingTrackerScreen() {
         </Text>
       </TouchableOpacity>
 
-      <Text style={styles.info}>Works in foreground + background</Text>
+      <Text style={styles.info}>
+        Works on Android 7-16 • Foreground + Background
+      </Text>
+      
+      <Text style={styles.version}>
+        Android {Platform.Version} • API {Platform.constants.Version}
+      </Text>
     </View>
   );
 }
@@ -163,5 +203,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#95a5a6',
     marginTop: 20,
+  },
+  version: {
+    fontSize: 12,
+    color: '#bdc3c7',
+    marginTop: 10,
   },
 });

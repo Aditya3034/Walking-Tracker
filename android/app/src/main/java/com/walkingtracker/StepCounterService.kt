@@ -7,15 +7,15 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 
 class StepCounterService : Service(), SensorEventListener {
     
@@ -27,6 +27,7 @@ class StepCounterService : Service(), SensorEventListener {
     companion object {
         const val CHANNEL_ID = "StepCounterChannel"
         const val NOTIFICATION_ID = 1001
+        private const val TAG = "StepCounterService"
     }
 
     override fun onCreate() {
@@ -38,21 +39,44 @@ class StepCounterService : Service(), SensorEventListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // UNIVERSAL startForeground - works Android 6.0+
-        val notification = createNotification(currentSteps)
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForeground(NOTIFICATION_ID, notification)
-        } else {
-            // Android 6.0-7.1: startForeground in onStartCommand
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            val notification = createNotification(currentSteps)
+            
+            // Handle different Android versions for foreground service
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
+                    // Android 14+ (API 34+) - requires service type
+                    startForeground(
+                        NOTIFICATION_ID, 
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+                    )
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                    // Android 10-13 (API 29-33)
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+                else -> {
+                    // Android 7-9 (API 24-28)
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            }
+            
+            // Register sensor listener
+            stepCounterSensor?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                Log.d(TAG, "Step counter sensor registered")
+            } ?: run {
+                Log.e(TAG, "No step counter sensor available")
+                stopSelf() // Stop service if no sensor
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
+            stopSelf()
         }
         
-        stepCounterSensor?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
-        }
-        
-        return START_STICKY // Auto-restart all versions
+        return START_STICKY // Auto-restart if killed
     }
 
     private fun createNotificationChannel() {
@@ -64,28 +88,36 @@ class StepCounterService : Service(), SensorEventListener {
             ).apply { 
                 description = "Tracks your steps 24/7"
                 setSound(null, null)
+                setShowBadge(false)
             }
             notificationManager?.createNotificationChannel(channel)
         }
     }
 
     private fun createNotification(steps: Int): Notification {
-        // UNIVERSAL launch intent - works all Android versions
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, launchIntent ?: Intent(this, javaClass), 
-            PendingIntent.FLAG_UPDATE_CURRENT or 
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+            this, 
+            0, 
+            launchIntent ?: Intent(this, javaClass), 
+            pendingIntentFlags
         )
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Walking Tracker")
             .setContentText("Steps today: $steps")
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setSilent(true)
             .build()
     }
 
@@ -106,6 +138,7 @@ class StepCounterService : Service(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         sensorManager.unregisterListener(this)
+        Log.d(TAG, "Service destroyed")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
