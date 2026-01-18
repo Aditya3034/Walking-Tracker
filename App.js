@@ -2,13 +2,17 @@ import React from 'react';
 import { StatusBar, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import WalkingTrackerScreen from './src/StepCounter';
+import BleConnect from './src/BleConnet';
 
 export default function App() {
   return (
     <SafeAreaProvider style={styles.appContainer}>
       <StatusBar barStyle="dark-content" />
       <SafeAreaView style={styles.container}>
-        <WalkingTrackerScreen />
+        <BleConnect />
+        <View style={{ flex: 1 }}>
+          <WalkingTrackerScreen />
+        </View>
       </SafeAreaView>
     </SafeAreaProvider>
   );
