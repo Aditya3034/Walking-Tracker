@@ -15,6 +15,7 @@ import {
 import { BleManager } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 import BleStepService from './BleStepService';
+import RNAndroidLocationEnabler from 'react-native-android-location-enabler';
 
 const manager = new BleManager();
 
@@ -169,11 +170,28 @@ export default function BleConnect() {
     }
   };
 
+  const ensureLocationEnabled = async () => {
+    try {
+      await RNAndroidLocationEnabler.promptForEnableLocationIfNeeded({
+        interval: 10000,
+        fastInterval: 5000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const startScan = async () => {
     if (!permissionsGranted) {
       const hasPermissions = await requestBluetoothPermissions();
       setPermissionsGranted(hasPermissions);
       if (!hasPermissions) return;
+      const locationEnabled = await ensureLocationEnabled();
+      if (!locationEnabled) {
+        Alert.alert('Location Required', 'Please enable location services');
+        return;
+      }
     }
 
     // Re-check Bluetooth state before scanning
