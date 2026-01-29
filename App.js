@@ -13,7 +13,7 @@ export default function App() {
       <SafeAreaView style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>🐾 Pet Fitness Tracker</Text>
+          <Text style={styles.headerTitle}>softwear.pet</Text>
         </View>
 
         {/* Tab Content */}

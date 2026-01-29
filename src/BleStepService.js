@@ -14,15 +14,33 @@ class BleStepService {
     this.isTracking = false;
   }
 
+  /* ---------- CONNECTION MANAGEMENT ---------- */
+
   setConnectedDevice(device) {
     this.connectedDevice = device;
     console.log('✅ BLE Device set:', device?.name || device?.id);
+
+    // Listen for unexpected disconnects
+    device.onDisconnected((error, dev) => {
+      console.log('❌ BLE Disconnected:', error?.message || 'OK');
+      this.clearDevice();
+    });
   }
 
   clearDevice() {
     this.stopStepTracking();
     this.connectedDevice = null;
   }
+
+  getDevice() {
+    return this.connectedDevice;
+  }
+
+  isConnected() {
+    return !!this.connectedDevice;
+  }
+
+  /* ---------- STEP STREAMING ---------- */
 
   async sendStepCount(steps) {
     if (!this.connectedDevice) {
@@ -46,13 +64,9 @@ class BleStepService {
   }
 
   startStepTracking() {
-    if (this.isTracking) {
-      console.warn('⚠️ Already tracking steps');
-      return;
-    }
-
+    if (this.isTracking) return;
     if (!this.connectedDevice) {
-      console.warn('⚠️ Cannot start tracking - no BLE device connected');
+      console.warn('⚠️ Cannot start tracking - no BLE device');
       return;
     }
 
@@ -61,7 +75,7 @@ class BleStepService {
     });
 
     this.isTracking = true;
-    console.log('🏃 Step tracking started - sending to BLE device');
+    console.log('🏃 Step tracking started');
   }
 
   stopStepTracking() {
@@ -73,14 +87,15 @@ class BleStepService {
     console.log('⏸️ Step tracking stopped');
   }
 
+  /* ---------- STATUS FOR UI ---------- */
+
   getTrackingStatus() {
     return {
       isTracking: this.isTracking,
       hasDevice: !!this.connectedDevice,
-      deviceName: this.connectedDevice?.name || this.connectedDevice?.id || null
+      deviceName: this.connectedDevice?.name || this.connectedDevice?.id || null,
     };
   }
 }
 
-// Singleton instance
 export default new BleStepService();

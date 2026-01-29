@@ -3,10 +3,43 @@ import {
   View, Text, TouchableOpacity, StyleSheet, PermissionsAndroid,
   Platform, NativeModules, NativeEventEmitter, Alert, ScrollView
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import BleStepService from './BleStepService';
 
 const { StepCounter } = NativeModules;
 const eventEmitter = new NativeEventEmitter(StepCounter);
+
+const MAX_STEPS = 1000;
+
+function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
+  const radius = (size - strokeWidth) / 2;
+  const center = size / 2;
+  const circumference = Math.PI * radius;
+  const ratio = progress / MAX_STEPS;
+  const dashOffset = circumference * (1 - ratio);
+
+  return (
+    <Svg width={size} height={size / 2 + strokeWidth}>
+      <Path
+        d={`M ${strokeWidth / 2}, ${center}
+            A ${radius}, ${radius} 0 0 1 ${size - strokeWidth / 2}, ${center}`}
+        stroke="#e0e0e0"
+        strokeWidth={strokeWidth}
+        fill="none"
+      />
+      <Path
+        d={`M ${strokeWidth / 2}, ${center}
+            A ${radius}, ${radius} 0 0 1 ${size - strokeWidth / 2}, ${center}`}
+        stroke="#27ae60"
+        strokeWidth={strokeWidth}
+        fill="none"
+        strokeDasharray={`${circumference} ${circumference}`}
+        strokeDashoffset={dashOffset}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
 
 export default function WalkingTrackerScreen() {
   const [steps, setSteps] = useState(0);
@@ -15,10 +48,10 @@ export default function WalkingTrackerScreen() {
   const [bleStatus, setBleStatus] = useState('No device');
 
   useEffect(() => {
-    const subscription = eventEmitter.addListener('StepCounterUpdate', (data) => {
+    const sub = eventEmitter.addListener('StepCounterUpdate', (data) => {
       setSteps(Math.round(data));
     });
-    return () => subscription?.remove();
+    return () => sub.remove();
   }, []);
 
   useEffect(() => {
@@ -27,9 +60,9 @@ export default function WalkingTrackerScreen() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      const status = BleStepService.getTrackingStatus();
-      if (status.hasDevice) {
-        setBleStatus(`Connected: ${status.deviceName}`);
+      const s = BleStepService.getTrackingStatus();
+      if (s.hasDevice) {
+        setBleStatus(`Connected: ${s.deviceName}`);
       } else {
         setBleStatus('No device connected');
       }
@@ -39,116 +72,64 @@ export default function WalkingTrackerScreen() {
   }, []);
 
   const requestAllPermissions = async () => {
-    if (Platform.OS !== 'android') {
-      setStatus('Ready');
-      return true;
-    }
+    if (Platform.OS !== 'android') return true;
 
     const permissions = [];
-
-    if (Platform.Version >= 33) {
+    if (Platform.Version >= 33)
       permissions.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
-    }
-
-    if (Platform.Version >= 29) {
+    if (Platform.Version >= 29)
       permissions.push(PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION);
-    }
 
-    if (permissions.length === 0) {
-      setStatus('Ready');
-      return true;
-    }
-
-    try {
-      const results = await PermissionsAndroid.requestMultiple(permissions);
-      
-      const allGranted = Object.values(results).every(
-        result => result === PermissionsAndroid.RESULTS.GRANTED
-      );
-
-      if (allGranted) {
-        setStatus('Ready');
-        return true;
-      } else {
-        setStatus('Permissions needed');
-        Alert.alert(
-          'Permissions Required',
-          'Please grant all permissions for step tracking.',
-          [{ text: 'OK' }]
-        );
-        return false;
-      }
-    } catch (err) {
-      console.error('Permission error:', err);
-      setStatus('Permission error');
-      return false;
-    }
+    const results = await PermissionsAndroid.requestMultiple(permissions);
+    return Object.values(results).every(r => r === PermissionsAndroid.RESULTS.GRANTED);
   };
 
   const toggleTracking = async () => {
-    try {
-      if (isTracking) {
-        BleStepService.stopStepTracking();
-        await StepCounter.stopBackgroundService();
-        StepCounter.stopStepCounter();
-        setIsTracking(false);
-        setStatus('Stopped');
-      } else {
-        const granted = await requestAllPermissions();
-        if (!granted) {
-          Alert.alert('Permissions Required', 'Please enable all permissions');
-          return;
-        }
-
-        StepCounter.startStepCounter();
-        BleStepService.startStepTracking();
-
-        try {
-          await StepCounter.startBackgroundService();
-          setIsTracking(true);
-          setStatus('Tracking');
-        } catch (error) {
-          console.error('Service start error:', error);
-          BleStepService.stopStepTracking();
-          Alert.alert(
-            'Service Start Failed',
-            'Please keep app open while starting',
-            [{
-              text: 'OK',
-              onPress: () => {
-                StepCounter.stopStepCounter();
-                setStatus('Failed');
-              }
-            }]
-          );
-        }
-      }
-    } catch (error) {
-      console.error('Tracking error:', error);
+    if (isTracking) {
       BleStepService.stopStepTracking();
-      Alert.alert('Error', error.message || 'Failed to toggle tracking');
+      await StepCounter.stopBackgroundService();
+      StepCounter.stopStepCounter();
+      setIsTracking(false);
+      setStatus('Stopped');
+    } else {
+      const granted = await requestAllPermissions();
+      if (!granted) return;
+
+      StepCounter.startStepCounter();
+      BleStepService.startStepTracking();
+
+      try {
+        await StepCounter.startBackgroundService();
+        setIsTracking(true);
+        setStatus('Tracking');
+      } catch {
+        BleStepService.stopStepTracking();
+        setStatus('Failed');
+      }
     }
   };
 
+  const ringProgress = steps % MAX_STEPS;
   const hasDevice = bleStatus.includes('Connected');
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-      {/* Connection Status Card */}
       <View style={[styles.card, hasDevice ? styles.cardSuccess : styles.cardWarning]}>
         <Text style={styles.cardIcon}>{hasDevice ? '✅' : '⚠️'}</Text>
-        <View style={styles.cardContent}>
+        <View>
           <Text style={styles.cardTitle}>Device Status</Text>
           <Text style={styles.cardText}>{bleStatus}</Text>
         </View>
       </View>
 
-      {/* Steps Display */}
       <View style={styles.stepsCard}>
-        <Text style={styles.stepsNumber}>{steps.toLocaleString()}</Text>
-        <Text style={styles.stepsLabel}>Steps Today</Text>
-        
-        {/* Status Badge */}
+        <SemiCircleProgress progress={ringProgress} />
+
+        <View style={styles.centerSteps}>
+          <Text style={styles.stepsNumber}>{steps.toLocaleString()}</Text>
+          <Text style={styles.stepsLabel}>Steps</Text>
+        </View>
+
         <View style={[styles.statusBadge, isTracking && styles.statusBadgeActive]}>
           <View style={[styles.statusDot, isTracking && styles.statusDotActive]} />
           <Text style={[styles.statusText, isTracking && styles.statusTextActive]}>
@@ -157,107 +138,56 @@ export default function WalkingTrackerScreen() {
         </View>
       </View>
 
-      {/* Action Button */}
       <TouchableOpacity
         style={[styles.actionButton, isTracking && styles.actionButtonStop]}
         onPress={toggleTracking}
-        activeOpacity={0.8}
       >
-        <Text style={styles.actionButtonIcon}>
-          {isTracking ? '⏹' : '▶️'}
-        </Text>
         <Text style={styles.actionButtonText}>
-          {isTracking ? 'STOP TRACKING' : 'START TRACKING'}
+          {isTracking ? 'STOP' : 'START'}
         </Text>
       </TouchableOpacity>
-
-      {/* Info Card */}
-      <View style={styles.infoCard}>
-        <Text style={styles.infoText}>
-          💡 Connect your Pet Locket device in the Device tab first
-        </Text>
-        <Text style={styles.infoSubtext}>
-          Android {Platform.Version} • Background tracking enabled
-        </Text>
-      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  contentContainer: {
-    padding: 20,
-  },
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+  contentContainer: { padding: 20 },
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 20,
-    borderLeftWidth: 4,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    flexDirection: 'row', padding: 16, borderRadius: 12,
+    backgroundColor: '#fff', marginBottom: 20, borderLeftWidth: 4
   },
-  cardSuccess: {
-    borderLeftColor: '#27ae60',
-    backgroundColor: '#f0fdf4',
-  },
-  cardWarning: {
-    borderLeftColor: '#f39c12',
-    backgroundColor: '#fffbeb',
-  },
-  cardIcon: {
-    fontSize: 32,
-    marginRight: 12,
-  },
-  cardContent: {
-    flex: 1,
-  },
-  cardTitle: {
-    fontSize: 12,
-    color: '#666',
-    textTransform: 'uppercase',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  cardText: {
-    fontSize: 16,
-    color: '#2c3e50',
-    fontWeight: '600',
-  },
+  cardSuccess: { borderLeftColor: '#27ae60' },
+  cardWarning: { borderLeftColor: '#f39c12' },
+  cardIcon: { fontSize: 28, marginRight: 12 },
+  cardTitle: { fontSize: 12, color: '#666' },
+  cardText: { fontSize: 16, fontWeight: '600' },
+
   stepsCard: {
     backgroundColor: '#fff',
-    padding: 32,
-    borderRadius: 16,
+    padding: 24,
+    borderRadius: 20,
     alignItems: 'center',
     marginBottom: 20,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+  },
+  centerSteps: {
+    position: 'absolute',
+    top: '38%',
+    alignItems: 'center',
   },
   stepsNumber: {
-    fontSize: 64,
+    fontSize: 48,
     fontWeight: '900',
     color: '#2c3e50',
-    marginBottom: 8,
   },
   stepsLabel: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#7f8c8d',
     fontWeight: '600',
-    marginBottom: 16,
   },
+
   statusBadge: {
+    marginTop: 20,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
@@ -265,70 +195,18 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 20,
   },
-  statusBadgeActive: {
-    backgroundColor: '#d1f2eb',
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#95a5a6',
-    marginRight: 8,
-  },
-  statusDotActive: {
-    backgroundColor: '#27ae60',
-  },
-  statusText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#7f8c8d',
-  },
-  statusTextActive: {
-    color: '#27ae60',
-  },
+  statusBadgeActive: { backgroundColor: '#d1f2eb' },
+  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#95a5a6', marginRight: 8 },
+  statusDotActive: { backgroundColor: '#27ae60' },
+  statusText: { fontWeight: '600', color: '#7f8c8d' },
+  statusTextActive: { color: '#27ae60' },
+
   actionButton: {
     backgroundColor: '#27ae60',
-    flexDirection: 'row',
+    paddingVertical: 16,
+    borderRadius: 12,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 18,
-    borderRadius: 12,
-    marginBottom: 20,
-    elevation: 4,
-    shadowColor: '#27ae60',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
   },
-  actionButtonStop: {
-    backgroundColor: '#e74c3c',
-    shadowColor: '#e74c3c',
-  },
-  actionButtonIcon: {
-    fontSize: 20,
-    marginRight: 8,
-  },
-  actionButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  infoCard: {
-    backgroundColor: '#e3f2fd',
-    padding: 16,
-    borderRadius: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#2196f3',
-  },
-  infoText: {
-    fontSize: 14,
-    color: '#1565c0',
-    marginBottom: 8,
-    fontWeight: '500',
-  },
-  infoSubtext: {
-    fontSize: 12,
-    color: '#64b5f6',
-  },
+  actionButtonStop: { backgroundColor: '#e74c3c' },
+  actionButtonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
 });

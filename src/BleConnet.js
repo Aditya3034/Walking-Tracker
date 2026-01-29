@@ -12,12 +12,11 @@ import {
   // ScrollView,
   Linking,
 } from 'react-native';
-import { BleManager } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 import BleStepService from './BleStepService';
 import RNAndroidLocationEnabler from 'react-native-android-location-enabler';
 
-const manager = new BleManager();
+import manager from './BleManagerSingleton';
 
 const APP_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
@@ -30,17 +29,22 @@ export default function BleConnect() {
   const [bluetoothState, setBluetoothState] = useState('Unknown');
   const [permissionsGranted, setPermissionsGranted] = useState(false);
 
-  useEffect(() => {
-    initializeBluetooth();
+useEffect(() => {
+  initializeBluetooth();
 
-    return () => {
-      manager.stopDeviceScan();
-      if (connectedDevice) {
-        connectedDevice.cancelConnection().catch(() => { });
-      }
-      manager.destroy();
-    };
-  }, []);
+  // Restore connection state if already connected
+  const status = BleStepService.getTrackingStatus();
+  if (status.hasDevice && BleStepService.connectedDevice) {
+    setConnectedDevice(BleStepService.connectedDevice);
+    setStatus('Connected');
+  }
+
+  return () => {
+    manager.stopDeviceScan();
+  };
+}, []);
+
+
 
   // const initializeBluetooth = async () => {
   //   const hasPermissions = await requestBluetoothPermissions();
