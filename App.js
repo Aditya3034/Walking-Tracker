@@ -18,12 +18,15 @@ export default function App() {
 
         {/* Tab Content */}
         <View style={styles.content}>
-          {activeTab === 'tracker' ? (
+          <View style={{ flex: 1, display: activeTab === 'tracker' ? 'flex' : 'none' }}>
             <WalkingTrackerScreen />
-          ) : (
+          </View>
+
+          <View style={{ flex: 1, display: activeTab === 'bluetooth' ? 'flex' : 'none' }}>
             <BleConnect />
-          )}
+          </View>
         </View>
+
 
         {/* Bottom Tab Bar */}
         <View style={styles.tabBar}>

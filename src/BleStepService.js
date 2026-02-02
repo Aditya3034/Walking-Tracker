@@ -20,8 +20,7 @@ class BleStepService {
     this.connectedDevice = device;
     console.log('✅ BLE Device set:', device?.name || device?.id);
 
-    // Listen for unexpected disconnects
-    device.onDisconnected((error, dev) => {
+    device.onDisconnected((error) => {
       console.log('❌ BLE Disconnected:', error?.message || 'OK');
       this.clearDevice();
     });
@@ -40,27 +39,40 @@ class BleStepService {
     return !!this.connectedDevice;
   }
 
-  /* ---------- STEP STREAMING ---------- */
+  /* ---------- LOW-LEVEL WRITE ---------- */
 
-  async sendStepCount(steps) {
+  async writeRaw(message) {
     if (!this.connectedDevice) {
       console.warn('⚠️ No BLE device connected');
       return false;
     }
 
     try {
-      const message = `STEPS:${Math.round(steps)}`;
       await this.connectedDevice.writeCharacteristicWithResponseForService(
         APP_SERVICE_UUID,
         CHARACTERISTIC_UUID,
-        Buffer.from(message).toString('base64')
+        Buffer.from(message, 'utf8').toString('base64')
       );
       console.log(`📤 Sent to ESP32: ${message}`);
       return true;
     } catch (error) {
-      console.error('❌ Failed to send steps:', error);
+      console.error('❌ BLE write failed:', error);
       return false;
     }
+  }
+
+  /* ---------- COMMANDS (PET CONTROL) ---------- */
+
+  async writeToDevice(command) {
+    // For commands like "FEED"
+    return this.writeRaw(command);
+  }
+
+  /* ---------- STEP STREAMING ---------- */
+
+  async sendStepCount(steps) {
+    const message = `STEPS:${Math.round(steps)}`;
+    return this.writeRaw(message);
   }
 
   startStepTracking() {
@@ -70,9 +82,12 @@ class BleStepService {
       return;
     }
 
-    this.stepSubscription = eventEmitter.addListener('StepCounterUpdate', (steps) => {
-      this.sendStepCount(steps);
-    });
+    this.stepSubscription = eventEmitter.addListener(
+      'StepCounterUpdate',
+      (steps) => {
+        this.sendStepCount(steps);
+      }
+    );
 
     this.isTracking = true;
     console.log('🏃 Step tracking started');
@@ -93,7 +108,10 @@ class BleStepService {
     return {
       isTracking: this.isTracking,
       hasDevice: !!this.connectedDevice,
-      deviceName: this.connectedDevice?.name || this.connectedDevice?.id || null,
+      deviceName:
+        this.connectedDevice?.name ||
+        this.connectedDevice?.id ||
+        null,
     };
   }
 }
