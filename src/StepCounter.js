@@ -87,7 +87,6 @@ function RouteOutline({ route, width = 320, height = 200 }) {
       <Svg width={width} height={height}>
         <Rect x="0" y="0" width={width} height={height} rx="16" fill="#0f172a" />
 
-        {/* Glow */}
         <Polyline
           points={polylinePoints}
           fill="none"
@@ -97,7 +96,6 @@ function RouteOutline({ route, width = 320, height = 200 }) {
           strokeLinejoin="round"
         />
 
-        {/* Main route */}
         <Polyline
           points={polylinePoints}
           fill="none"
@@ -107,7 +105,6 @@ function RouteOutline({ route, width = 320, height = 200 }) {
           strokeLinejoin="round"
         />
 
-        {/* Start / End dots */}
         <Circle cx={start.x} cy={start.y} r="5" fill="#22c55e" />
         <Circle cx={end.x} cy={end.y} r="5" fill="#ef4444" />
       </Svg>
@@ -128,6 +125,8 @@ export default function WalkingTrackerScreen() {
   const sessionOffsetRef = useRef(null);
   const savedStepsRef = useRef(0);
 
+  /* ---------- STEP EVENTS ---------- */
+
   useEffect(() => {
     const sub = eventEmitter.addListener('StepCounterUpdate', (data) => {
       const rawSteps = Math.round(data);
@@ -147,17 +146,7 @@ export default function WalkingTrackerScreen() {
     return () => sub.remove();
   }, []);
 
-  const requestAllPermissions = async () => {
-    if (Platform.OS !== 'android') return true;
-
-    const permissions = [
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
-    ];
-
-    const results = await PermissionsAndroid.requestMultiple(permissions);
-    return Object.values(results).every(r => r === PermissionsAndroid.RESULTS.GRANTED);
-  };
+  /* ---------- BLE STATUS ---------- */
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -166,6 +155,21 @@ export default function WalkingTrackerScreen() {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  /* ---------- PERMISSIONS ---------- */
+
+  const requestAllPermissions = async () => {
+    if (Platform.OS !== 'android') return true;
+
+    const results = await PermissionsAndroid.requestMultiple([
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
+    ]);
+
+    return Object.values(results).every(r => r === PermissionsAndroid.RESULTS.GRANTED);
+  };
+
+  /* ---------- START / STOP ---------- */
 
   const toggleTracking = async () => {
     if (isTracking) {
@@ -206,10 +210,33 @@ export default function WalkingTrackerScreen() {
     }
   };
 
+  /* ---------- DERIVED VALUES ---------- */
+
+  const ringProgress = steps % MAX_STEPS;
+  const treats = Math.floor(steps / MAX_STEPS);
+  const hasDevice = bleStatus.includes('Connected');
+
+  /* ---------- FEED PET ---------- */
+
+  const feedPet = async () => {
+    if (treats <= 0 || !hasDevice) return;
+
+    try {
+      BleStepService.writeToDevice('FEED');
+
+      savedStepsRef.current = Math.max(0, savedStepsRef.current - MAX_STEPS);
+      setSteps(prev => Math.max(0, prev - MAX_STEPS));
+    } catch (e) {
+      console.warn('Feed failed', e);
+    }
+  };
+
+  /* -------------------- UI -------------------- */
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       <View style={styles.stepsCard}>
-        <SemiCircleProgress progress={steps % MAX_STEPS} />
+        <SemiCircleProgress progress={ringProgress} />
         <View style={styles.centerSteps}>
           <Text style={styles.stepsNumber}>{steps}</Text>
           <Text style={styles.stepsLabel}>Steps</Text>
@@ -230,6 +257,26 @@ export default function WalkingTrackerScreen() {
       </Text>
 
       {route.length > 1 && <RouteOutline route={route} />}
+
+      {treats > 0 && (
+        <View style={styles.treatsCard}>
+          <Text style={styles.treatsTitle}>🍪 Treats Earned</Text>
+
+          <View style={styles.treatsRow}>
+            {Array.from({ length: treats }).map((_, i) => (
+              <Text key={i} style={styles.treatIcon}>🍪</Text>
+            ))}
+          </View>
+
+          <TouchableOpacity
+            style={[styles.feedButton, (!hasDevice || treats <= 0) && { opacity: 0.5 }]}
+            onPress={feedPet}
+            disabled={!hasDevice || treats <= 0}
+          >
+            <Text style={styles.feedButtonText}>🍖 Feed Pet</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -239,6 +286,7 @@ export default function WalkingTrackerScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
   contentContainer: { padding: 20 },
+
   stepsCard: {
     backgroundColor: '#fff',
     padding: 24,
@@ -249,6 +297,7 @@ const styles = StyleSheet.create({
   centerSteps: { position: 'absolute', top: '38%', alignItems: 'center' },
   stepsNumber: { fontSize: 48, fontWeight: '900', color: '#2c3e50' },
   stepsLabel: { fontSize: 14, color: '#7f8c8d', fontWeight: '600' },
+
   actionButton: {
     backgroundColor: '#27ae60',
     paddingVertical: 16,
@@ -258,4 +307,24 @@ const styles = StyleSheet.create({
   },
   actionButtonStop: { backgroundColor: '#e74c3c' },
   actionButtonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+
+  treatsCard: {
+    marginTop: 20,
+    backgroundColor: '#fff',
+    padding: 16,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  treatsTitle: { fontSize: 16, fontWeight: '700', marginBottom: 8, color: '#2c3e50' },
+  treatsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },
+  treatIcon: { fontSize: 24, margin: 4 },
+
+  feedButton: {
+    marginTop: 12,
+    backgroundColor: '#f39c12',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  feedButtonText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });
