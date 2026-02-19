@@ -40,34 +40,40 @@
         android:required="false" />
 
     <application
-        android:name=".MainApplication"
+    android:name=".MainApplication"
+    android:label="@string/app_name"
+    android:icon="@mipmap/ic_launcher"
+    android:roundIcon="@mipmap/ic_launcher_round"
+    android:allowBackup="false"
+    android:theme="@style/AppTheme"
+    android:usesCleartextTraffic="${usesCleartextTraffic}"
+    android:supportsRtl="true"
+    tools:targetApi="34">
+
+    <!-- ✅ Google Maps API Key (REQUIRED for react-native-maps) -->
+    <meta-data
+        android:name="com.google.android.geo.API_KEY"
+        android:value="AIzaSyDu1yXG9-7mnK4usBQf20wzbx72J1p8kMU" />
+
+    <service 
+        android:name="com.walkingtracker.StepCounterService"
+        android:foregroundServiceType="health"
+        android:exported="false"
+        android:enabled="true" />
+
+    <activity
+        android:name=".MainActivity"
+        android:exported="true"
+        android:launchMode="singleTask"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+        android:windowSoftInputMode="adjustResize"
         android:label="@string/app_name"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:allowBackup="false"
-        android:theme="@style/AppTheme"
-        android:usesCleartextTraffic="${usesCleartextTraffic}"
-        android:supportsRtl="true"
-        tools:targetApi="34">
+        android:theme="@style/AppTheme">
+        <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent-filter>
+    </activity>
+</application>
 
-        <service 
-            android:name="com.walkingtracker.StepCounterService"
-            android:foregroundServiceType="health"
-            android:exported="false"
-            android:enabled="true" />
-
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:launchMode="singleTask"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
-            android:windowSoftInputMode="adjustResize"
-            android:label="@string/app_name"
-            android:theme="@style/AppTheme">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
 </manifest>
