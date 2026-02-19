@@ -50,7 +50,6 @@
     android:supportsRtl="true"
     tools:targetApi="34">
 
-    <!-- ✅ Google Maps API Key (REQUIRED for react-native-maps) -->
     <meta-data
         android:name="com.google.android.geo.API_KEY"
         android:value="AIzaSyDu1yXG9-7mnK4usBQf20wzbx72J1p8kMU" />
