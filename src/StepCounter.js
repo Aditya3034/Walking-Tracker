@@ -19,27 +19,66 @@ const eventEmitter = new NativeEventEmitter(StepCounter);
 
 const MAX_STEPS = 100;
 
-/* -------------------- UTILS -------------------- */
+/* -------------------- ROUTE HELPERS -------------------- */
 
-function normalizeRoute(points, width, height, padding = 20) {
+function projectRouteRaw(points, scale = 100000) {
   if (!points.length) return [];
 
-  const lats = points.map(p => p.latitude);
-  const lngs = points.map(p => p.longitude);
+  const base = points[0];
+  return points.map(p => ({
+    x: (p.longitude - base.longitude) * scale,
+    y: (base.latitude - p.latitude) * scale,
+  }));
+}
 
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
+function followCurrentPoint(points, width, height) {
+  if (!points.length) return [];
 
-  const latRange = maxLat - minLat || 1;
-  const lngRange = maxLng - minLng || 1;
+  const centerX = width / 2;
+  const centerY = height / 2;
 
-  return points.map(p => {
-    const x = padding + ((p.longitude - minLng) / lngRange) * (width - padding * 2);
-    const y = padding + ((maxLat - p.latitude) / latRange) * (height - padding * 2);
-    return { x, y };
-  });
+  const current = points[points.length - 1];
+
+  return points.map(p => ({
+    x: p.x - current.x + centerX,
+    y: p.y - current.y + centerY,
+  }));
+}
+
+function normalizeRouteToCard(points, width, height, padding = 24) {
+  if (!points.length) return [];
+
+  const xs = points.map(p => p.x);
+  const ys = points.map(p => p.y);
+
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+
+  return points.map(p => ({
+    x: padding + ((p.x - minX) / rangeX) * (width - padding * 2),
+    y: padding + ((p.y - minY) / rangeY) * (height - padding * 2),
+  }));
+}
+
+function rotateRoute90Up(points) {
+  if (!points.length) return [];
+
+  return points.map(p => ({
+    x: p.y,
+    y: -p.x,
+  }));
+}
+
+function flipRouteDiagonal(points, width, height) {
+  return points.map(p => ({
+    x: width - p.x,
+    y: height - p.y,
+  }));
 }
 
 /* -------------------- UI COMPONENTS -------------------- */
@@ -74,9 +113,21 @@ function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
   );
 }
 
-function RouteOutline({ route, width = 320, height = 200 }) {
-  const points = normalizeRoute(route, width, height);
-  if (points.length < 2) return null;
+function RouteOutline({ route, isTracking, width = 340, height = 260 }) {
+
+  if (route.length < 1) return null;
+
+  const world = projectRouteRaw(route);
+
+  let points;
+
+  if (isTracking) {
+    points = followCurrentPoint(world, width, height);
+  } else {
+    const rotated = rotateRoute90Up(world);
+    const normalized = normalizeRouteToCard(rotated, width, height, 50);
+    points = flipRouteDiagonal(normalized, width, height);
+  }
 
   const polylinePoints = points.map(p => `${p.x},${p.y}`).join(' ');
   const start = points[0];
@@ -85,12 +136,12 @@ function RouteOutline({ route, width = 320, height = 200 }) {
   return (
     <View style={{ alignItems: 'center', marginTop: 20 }}>
       <Svg width={width} height={height}>
-        <Rect x="0" y="0" width={width} height={height} rx="16" fill="#0f172a" />
+        <Rect x="0" y="0" width={width} height={height} rx="16" fill="#ffffff" />
 
         <Polyline
           points={polylinePoints}
           fill="none"
-          stroke="rgba(255,90,31,0.4)"
+          stroke="rgba(255, 91, 31, 0)"
           strokeWidth="8"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -99,14 +150,14 @@ function RouteOutline({ route, width = 320, height = 200 }) {
         <Polyline
           points={polylinePoints}
           fill="none"
-          stroke="#ff5a1f"
-          strokeWidth="4"
+          stroke="#000000"
+          strokeWidth="3"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
 
-        <Circle cx={start.x} cy={start.y} r="5" fill="#22c55e" />
-        <Circle cx={end.x} cy={end.y} r="5" fill="#ef4444" />
+        <Circle cx={start.x} cy={start.y} r="3" fill="#000000" />
+        <Circle cx={end.x} cy={end.y} r="6" fill="#0098e9" />
       </Svg>
     </View>
   );
@@ -124,8 +175,6 @@ export default function WalkingTrackerScreen() {
   const watchIdRef = useRef(null);
   const sessionOffsetRef = useRef(null);
   const savedStepsRef = useRef(0);
-
-  /* ---------- STEP EVENTS ---------- */
 
   useEffect(() => {
     const sub = eventEmitter.addListener('StepCounterUpdate', (data) => {
@@ -146,8 +195,6 @@ export default function WalkingTrackerScreen() {
     return () => sub.remove();
   }, []);
 
-  /* ---------- BLE STATUS ---------- */
-
   useEffect(() => {
     const interval = setInterval(() => {
       const s = BleStepService.getTrackingStatus();
@@ -155,8 +202,6 @@ export default function WalkingTrackerScreen() {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
-
-  /* ---------- PERMISSIONS ---------- */
 
   const requestAllPermissions = async () => {
     if (Platform.OS !== 'android') return true;
@@ -168,8 +213,6 @@ export default function WalkingTrackerScreen() {
 
     return Object.values(results).every(r => r === PermissionsAndroid.RESULTS.GRANTED);
   };
-
-  /* ---------- START / STOP ---------- */
 
   const toggleTracking = async () => {
     if (isTracking) {
@@ -210,28 +253,21 @@ export default function WalkingTrackerScreen() {
     }
   };
 
-  /* ---------- DERIVED VALUES ---------- */
-
   const ringProgress = steps % MAX_STEPS;
   const treats = Math.floor(steps / MAX_STEPS);
   const hasDevice = bleStatus.includes('Connected');
-
-  /* ---------- FEED PET ---------- */
 
   const feedPet = async () => {
     if (treats <= 0 || !hasDevice) return;
 
     try {
       BleStepService.writeToDevice('FEED');
-
       savedStepsRef.current = Math.max(0, savedStepsRef.current - MAX_STEPS);
       setSteps(prev => Math.max(0, prev - MAX_STEPS));
     } catch (e) {
       console.warn('Feed failed', e);
     }
   };
-
-  /* -------------------- UI -------------------- */
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
@@ -256,7 +292,9 @@ export default function WalkingTrackerScreen() {
         GPS points: {route.length}
       </Text>
 
-      {route.length > 1 && <RouteOutline route={route} />}
+      {route.length >= 1 && (
+        <RouteOutline route={route} isTracking={isTracking} />
+      )}
 
       {treats > 0 && (
         <View style={styles.treatsCard}>
@@ -273,7 +311,7 @@ export default function WalkingTrackerScreen() {
             onPress={feedPet}
             disabled={!hasDevice || treats <= 0}
           >
-            <Text style={styles.feedButtonText}>🍖 Feed Pet</Text>
+            <Text style={styles.feedButtonText}>Feed Pet</Text>
           </TouchableOpacity>
         </View>
       )}

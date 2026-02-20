@@ -49,11 +49,7 @@
     android:usesCleartextTraffic="${usesCleartextTraffic}"
     android:supportsRtl="true"
     tools:targetApi="34">
-
-    <meta-data
-        android:name="com.google.android.geo.API_KEY"
-        android:value="AIzaSyDu1yXG9-7mnK4usBQf20wzbx72J1p8kMU" />
-
+        
     <service 
         android:name="com.walkingtracker.StepCounterService"
         android:foregroundServiceType="health"
