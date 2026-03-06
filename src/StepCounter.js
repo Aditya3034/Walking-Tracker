@@ -10,7 +10,7 @@ import {
   NativeEventEmitter,
   ScrollView,
 } from 'react-native';
-import Svg, { Path, Polyline, Rect, Circle } from 'react-native-svg';
+import Svg, { Path, Polyline, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
 
@@ -56,29 +56,49 @@ function normalizeRouteToCard(points, width, height, padding = 24) {
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
 
-  const rangeX = maxX - minX || 1;
-  const rangeY = maxY - minY || 1;
+  const routeWidth = maxX - minX || 1;
+  const routeHeight = maxY - minY || 1;
+
+  const availableWidth = width - padding * 2;
+  const availableHeight = height - padding * 2;
+
+  // use uniform scale so angles stay correct
+  const scale = Math.min(
+    availableWidth / routeWidth,
+    availableHeight / routeHeight
+  );
+
+  // center the route inside the card
+  const offsetX = (width - routeWidth * scale) / 2;
+  const offsetY = (height - routeHeight * scale) / 2;
 
   return points.map(p => ({
-    x: padding + ((p.x - minX) / rangeX) * (width - padding * 2),
-    y: padding + ((p.y - minY) / rangeY) * (height - padding * 2),
+    x: offsetX + (p.x - minX) * scale,
+    y: offsetY + (p.y - minY) * scale,
   }));
 }
 
-function rotateRoute90Up(points) {
-  if (!points.length) return [];
 
-  return points.map(p => ({
-    x: p.y,
-    y: -p.x,
-  }));
-}
 
-function flipRouteDiagonal(points, width, height) {
-  return points.map(p => ({
-    x: width - p.x,
-    y: height - p.y,
-  }));
+function getHeading(points) {
+  if (points.length < 2) return 0;
+
+  const p1 = points[points.length - 2];
+  const p2 = points[points.length - 1];
+
+  const dLon = (p2.longitude - p1.longitude) * Math.PI / 180;
+
+  const lat1 = p1.latitude * Math.PI / 180;
+  const lat2 = p2.latitude * Math.PI / 180;
+
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+
+  const bearing = Math.atan2(y, x) * (180 / Math.PI);
+
+  return (bearing + 360) % 360;
 }
 
 /* -------------------- UI COMPONENTS -------------------- */
@@ -122,12 +142,10 @@ function RouteOutline({ route, isTracking, width = 340, height = 260 }) {
   let points;
 
   if (isTracking) {
-    points = followCurrentPoint(world, width, height);
-  } else {
-    const rotated = rotateRoute90Up(world);
-    const normalized = normalizeRouteToCard(rotated, width, height, 50);
-    points = flipRouteDiagonal(normalized, width, height);
-  }
+  points = followCurrentPoint(world, width, height);
+} else {
+  points = normalizeRouteToCard(world, width, height, 50);
+}
 
   const polylinePoints = points.map(p => `${p.x},${p.y}`).join(' ');
   const start = points[0];
@@ -156,9 +174,45 @@ function RouteOutline({ route, isTracking, width = 340, height = 260 }) {
           strokeLinejoin="round"
         />
 
-        <Circle cx={start.x} cy={start.y} r="3" fill="#000000" />
+        <Circle cx={start.x} cy={start.y} r="3" fill="#034dd8" />
         <Circle cx={end.x} cy={end.y} r="6" fill="#0098e9" />
       </Svg>
+    </View>
+  );
+}
+
+function DirectionCompass({ route }) {
+  const heading = getHeading(route);
+
+  return (
+    <View style={{ alignItems: 'center', marginTop: 12 }}>
+      <Svg width={60} height={60} viewBox="0 0 60 60">
+
+        <Circle cx="30" cy="30" r="10" fill="#fff" />
+
+        {/* NORTH LABEL */}
+        <SvgText
+          x="30"
+          y="10"
+          fontSize="10"
+          fill="#333"
+          textAnchor="middle"
+        >
+          N
+        </SvgText>
+
+        {/* ARROW */}
+        <Path
+          d="M30 12 L36 30 L30 26 L24 30 Z"
+          fill="#000"
+          transform={`rotate(${heading} 30 30)`}
+        />
+
+      </Svg>
+
+      <Text style={{ fontSize: 12, color: '#777', marginTop: 4 }}>
+        Direction
+      </Text>
     </View>
   );
 }
@@ -291,6 +345,7 @@ export default function WalkingTrackerScreen() {
       <Text style={{ textAlign: 'center', color: '#999', marginTop: 10 }}>
         GPS points: {route.length}
       </Text>
+      <DirectionCompass route={route} />
 
       {route.length >= 1 && (
         <RouteOutline route={route} isTracking={isTracking} />
