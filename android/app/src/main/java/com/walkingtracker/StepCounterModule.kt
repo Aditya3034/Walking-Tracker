@@ -155,8 +155,13 @@ import android.util.Log
 import kotlin.math.sqrt
 import kotlin.math.abs
 
-class StepCounterModule(reactContext: ReactApplicationContext) : 
+class StepCounterModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext), SensorEventListener {
+
+    init {
+        // Share context with the background service so it can emit events to JS
+        StepCounterService.setReactContext(reactContext)
+    }
     
     private val sensorManager: SensorManager = 
         reactContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -251,6 +256,22 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun getBackgroundSteps(promise: Promise) {
+        val prefs = reactApplicationContext.getSharedPreferences(
+            StepCounterService.PREFS_NAME, android.content.Context.MODE_PRIVATE
+        )
+        promise.resolve(prefs.getInt(StepCounterService.PREFS_STEPS_KEY, 0))
+    }
+
+    @ReactMethod
+    fun getBackgroundRoute(promise: Promise) {
+        val prefs = reactApplicationContext.getSharedPreferences(
+            StepCounterService.PREFS_NAME, android.content.Context.MODE_PRIVATE
+        )
+        promise.resolve(prefs.getString(StepCounterService.PREFS_ROUTE_KEY, "[]"))
+    }
+
     override fun onSensorChanged(event: SensorEvent?) {
         event?.let {
             when (it.sensor.type) {
@@ -281,14 +302,16 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
-        
+
         currentAcceleration = sqrt(x * x + y * y + z * z)
         isWalking = currentAcceleration in 8.5f..14.0f
-        
+
         if (isWalking) {
+            // detectStepFromAccelerometer calls fuseStepCounts() only when a step is detected
             detectStepFromAccelerometer(currentAcceleration, System.currentTimeMillis())
         }
-        
+        // Do NOT call fuseStepCounts() here — that would emit an event on every ~50Hz sample
+
         lastAcceleration = currentAcceleration
     }
 
@@ -307,7 +330,7 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
     }
 
     private fun fuseStepCounts() {
-        fusedStepCount = when {
+        val newFused = when {
             stepCounterSensor != null && hardwareStepCount >= 0 -> {
                 if (algorithmStepCount > 0) {
                     val diff = abs(hardwareStepCount - algorithmStepCount)
@@ -323,8 +346,14 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
             algorithmStepCount > 0 -> algorithmStepCount
             else -> 0
         }
-        
-        sendEvent("StepCounterUpdate", fusedStepCount.toDouble())
+
+        // Only emit when the count actually changes to avoid flooding JS
+        if (newFused != fusedStepCount) {
+            fusedStepCount = newFused
+            sendEvent("StepCounterUpdate", fusedStepCount.toDouble())
+        } else {
+            fusedStepCount = newFused
+        }
     }
 
     private fun sendEvent(eventName: String, steps: Double) {

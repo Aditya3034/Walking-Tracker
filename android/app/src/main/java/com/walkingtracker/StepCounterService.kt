@@ -185,10 +185,17 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.lang.ref.WeakReference
 import kotlin.math.sqrt
 import kotlin.math.abs
 
@@ -224,19 +231,46 @@ class StepCounterService : Service(), SensorEventListener {
     private var isWalking = false
     private var isDriving = false
     private var consecutiveSteps = 0
+    private var idleFrames = 0
     private var lastActivityCheck = 0L
     
     // Gyroscope for noise filtering
     private var rotationMagnitude = 0f
-    
+
+    // GPS route tracking
+    private var locationManager: LocationManager? = null
+    private val routePoints = mutableListOf<Pair<Double, Double>>()
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            routePoints.add(Pair(location.latitude, location.longitude))
+            persistRoute()
+        }
+        @Deprecated("Deprecated in API 29")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {
+            Log.w(TAG, "GPS provider disabled")
+        }
+    }
+
     companion object {
         const val CHANNEL_ID = "StepCounterChannel"
         const val NOTIFICATION_ID = 1001
+        const val PREFS_NAME = "StepTracker"
+        const val PREFS_STEPS_KEY = "background_steps"
+        const val PREFS_ROUTE_KEY = "background_route"
         private const val TAG = "StepCounterService"
-        
+
         private const val DRIVING_THRESHOLD = 4.0f
         private const val WALKING_ACCEL_MIN = 8.5f
         private const val WALKING_ACCEL_MAX = 14.0f
+
+        private var reactContextRef: WeakReference<ReactApplicationContext>? = null
+
+        fun setReactContext(context: ReactApplicationContext) {
+            reactContextRef = WeakReference(context)
+        }
     }
 
     override fun onCreate() {
@@ -265,6 +299,7 @@ class StepCounterService : Service(), SensorEventListener {
             }
         }
         
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         createNotificationChannel()
     }
@@ -294,13 +329,43 @@ class StepCounterService : Service(), SensorEventListener {
             }
             
             registerSensors()
-            
+            startLocationTracking()
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start service: ${e.message}", e)
             stopSelf()
         }
         
         return START_STICKY
+    }
+
+    private fun startLocationTracking() {
+        try {
+            val isGpsEnabled = locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true
+            val provider = when {
+                isGpsEnabled -> LocationManager.GPS_PROVIDER
+                else -> LocationManager.NETWORK_PROVIDER
+            }
+            locationManager?.requestLocationUpdates(provider, 1000L, 1f, locationListener)
+            Log.d(TAG, "✅ GPS tracking started via $provider")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "GPS permission denied: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start GPS: ${e.message}")
+        }
+    }
+
+    private fun persistRoute() {
+        val json = buildString {
+            append("[")
+            routePoints.forEachIndexed { i, (lat, lng) ->
+                if (i > 0) append(",")
+                append("""{"lat":$lat,"lng":$lng}""")
+            }
+            append("]")
+        }
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(PREFS_ROUTE_KEY, json).apply()
     }
 
     private fun registerSensors() {
@@ -406,16 +471,19 @@ class StepCounterService : Service(), SensorEventListener {
 
     private fun detectActivity(acceleration: Float) {
         val isCurrentlyWalking = acceleration in WALKING_ACCEL_MIN..WALKING_ACCEL_MAX
-        
+
         if (isCurrentlyWalking) {
             consecutiveSteps++
             if (consecutiveSteps > 2) {
                 isWalking = true
             }
         } else {
+            // Require several consecutive non-walking readings before marking idle
+            // to avoid flickering. Using a separate idle counter here.
             consecutiveSteps = 0
-            if (!isCurrentlyWalking && consecutiveSteps == 0) {
+            if (idleFrames++ > 5) {
                 isWalking = false
+                idleFrames = 0
             }
         }
     }
@@ -453,7 +521,25 @@ class StepCounterService : Service(), SensorEventListener {
             useAccelerometerOnly -> algorithmStepCount
             else -> maxOf(hardwareStepCount, algorithmStepCount, 0)
         }
-        
+
+        // Persist step count so JS can read it via getBackgroundSteps() on resume
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(PREFS_STEPS_KEY, fusedStepCount).apply()
+
+        // Only emit to JS when the React bridge is alive but the foreground module is NOT
+        // actively listening (i.e. app is backgrounded). When the app is in the foreground
+        // StepCounterModule has its own sensor listeners and emits the events itself,
+        // so emitting here too would cause every step to be counted twice.
+        val ctx = reactContextRef?.get()
+        if (ctx != null) {
+            try {
+                ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                    ?.emit("StepCounterUpdate", fusedStepCount.toDouble())
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to emit step event to JS: ${e.message}")
+            }
+        }
+
         updateNotification()
     }
 
@@ -531,12 +617,22 @@ class StepCounterService : Service(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         sensorManager.unregisterListener(this)
-        
+
         hardwareStepCount = -1
         initialHardwareSteps = -1
         algorithmStepCount = 0
         fusedStepCount = 0
-        
+        consecutiveSteps = 0
+        idleFrames = 0
+        isWalking = false
+
+        locationManager?.removeUpdates(locationListener)
+        routePoints.clear()
+
+        // Clear persisted data since session ended
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().remove(PREFS_STEPS_KEY).remove(PREFS_ROUTE_KEY).apply()
+
         Log.d(TAG, "Service destroyed")
     }
 

@@ -9,13 +9,20 @@ import {
   NativeModules,
   NativeEventEmitter,
   ScrollView,
+  AppState,
 } from 'react-native';
 import Svg, { Path, Polyline, Rect, Circle, Text as SvgText } from 'react-native-svg';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
 
 const { StepCounter } = NativeModules;
-const eventEmitter = new NativeEventEmitter(StepCounter);
+if (!StepCounter) {
+  console.error(
+    '[StepCounter] Native module "StepCounter" is not registered. ' +
+    'Ensure StepCounterPackage is added to MainApplication and the app has been rebuilt.'
+  );
+}
+const eventEmitter = new NativeEventEmitter(StepCounter || null);
 
 const MAX_STEPS = 100;
 
@@ -257,24 +264,122 @@ export default function WalkingTrackerScreen() {
     return () => clearInterval(interval);
   }, []);
 
+  // Sync step count from background service when app comes to foreground
+  // On mount: restore state if the background service is still running (e.g. after app kill)
+  useEffect(() => {
+    const syncOnMount = async () => {
+      try {
+        const bgSteps = await StepCounter.getBackgroundSteps();
+        if (bgSteps > 0) {
+          savedStepsRef.current = bgSteps;
+          setSteps(bgSteps);
+          setIsTracking(true);
+          setStatus('Tracking');
+
+          // Restore route from background GPS tracking
+          try {
+            const routeJson = await StepCounter.getBackgroundRoute();
+            const bgRoute = JSON.parse(routeJson).map(p => ({
+              latitude: p.lat,
+              longitude: p.lng,
+            }));
+            if (bgRoute.length > 0) setRoute(bgRoute);
+          } catch (e) {
+            console.log('Route restore failed', e);
+          }
+
+          // Restart foreground sensors (permissions already granted)
+          StepCounter.startStepCounter();
+          const wid = Geolocation.watchPosition(
+            (pos) => {
+              const { latitude, longitude } = pos.coords;
+              setRoute(prev => [...prev, { latitude, longitude }]);
+            },
+            (err) => console.log('GPS error', err),
+            { enableHighAccuracy: true, distanceFilter: 1, interval: 1000, fastestInterval: 500 }
+          );
+          watchIdRef.current = wid;
+        }
+      } catch (e) {
+        console.log('Mount sync failed', e);
+      }
+    };
+    syncOnMount();
+  }, []);
+
+  // Sync step count from background service when app comes to foreground.
+  // Do NOT guard on isTracking — that state is lost when the app is killed.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (nextState) => {
+      if (nextState === 'active') {
+        try {
+          const bgSteps = await StepCounter.getBackgroundSteps();
+          // Only sync forward — never let a stale/lower background count overwrite
+          // a higher count that was already displayed in the UI.
+          if (bgSteps > savedStepsRef.current) {
+            savedStepsRef.current = bgSteps;
+            sessionOffsetRef.current = null; // reset so next sensor event re-baselines
+            setSteps(bgSteps);
+            setIsTracking(true);
+            setStatus('Tracking');
+          }
+        } catch (e) {
+          console.log('Background step sync failed', e);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   const requestAllPermissions = async () => {
     if (Platform.OS !== 'android') return true;
 
-    const results = await PermissionsAndroid.requestMultiple([
+    const perms = [
       PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION,
-    ]);
+    ];
 
-    return Object.values(results).every(r => r === PermissionsAndroid.RESULTS.GRANTED);
+    // Android 13+ requires explicit notification permission
+    if (Platform.Version >= 33) {
+      perms.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+    }
+
+    const results = await PermissionsAndroid.requestMultiple(perms);
+    const baseGranted = Object.values(results).every(
+      r => r === PermissionsAndroid.RESULTS.GRANTED
+    );
+
+    if (!baseGranted) return false;
+
+    // Background location must be requested separately on Android 10+
+    if (Platform.Version >= 29) {
+      await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION
+      );
+      // Continue even if denied — GPS just won't update when backgrounded
+    }
+
+    return true;
   };
 
   const toggleTracking = async () => {
+    if (!StepCounter) {
+      console.error('StepCounter native module is not available');
+      return;
+    }
+
     if (isTracking) {
-      Geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
+      if (watchIdRef.current != null) {
+        Geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
 
       BleStepService.stopStepTracking();
-      await StepCounter.stopBackgroundService();
+      try {
+        await StepCounter.stopBackgroundService();
+      } catch (e) {
+        console.warn('stopBackgroundService error', e);
+      }
       StepCounter.stopStepCounter();
 
       savedStepsRef.current = steps;
@@ -295,12 +400,16 @@ export default function WalkingTrackerScreen() {
           setRoute(prev => [...prev, { latitude, longitude }]);
         },
         (err) => console.log('GPS error', err),
-        { enableHighAccuracy: true, distanceFilter: 5, interval: 3000 }
+        { enableHighAccuracy: true, distanceFilter: 1, interval: 1000, fastestInterval: 500 }
       );
 
       StepCounter.startStepCounter();
       BleStepService.startStepTracking();
-      await StepCounter.startBackgroundService();
+      try {
+        await StepCounter.startBackgroundService();
+      } catch (e) {
+        console.warn('startBackgroundService error', e);
+      }
 
       setIsTracking(true);
       setStatus('Tracking');
@@ -315,7 +424,8 @@ export default function WalkingTrackerScreen() {
     if (treats <= 0 || !hasDevice) return;
 
     try {
-      BleStepService.writeToDevice('FEED');
+      // writeToDevice is async — await it so errors are caught below
+      await BleStepService.writeToDevice('FEED');
       savedStepsRef.current = Math.max(0, savedStepsRef.current - MAX_STEPS);
       setSteps(prev => Math.max(0, prev - MAX_STEPS));
     } catch (e) {

@@ -2,7 +2,9 @@ import { NativeModules, NativeEventEmitter } from 'react-native';
 import { Buffer } from 'buffer';
 
 const { StepCounter } = NativeModules;
-const eventEmitter = new NativeEventEmitter(StepCounter);
+// Guard: NativeEventEmitter requires a non-null module; if the native module is missing
+// (e.g. app not rebuilt after adding the package) avoid a crash at import time.
+const eventEmitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
 
 const APP_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
@@ -79,6 +81,10 @@ class BleStepService {
     if (this.isTracking) return;
     if (!this.connectedDevice) {
       console.warn('⚠️ Cannot start tracking - no BLE device');
+      return;
+    }
+    if (!eventEmitter) {
+      console.warn('⚠️ Cannot start tracking - StepCounter native module unavailable');
       return;
     }
 

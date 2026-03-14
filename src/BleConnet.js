@@ -29,55 +29,7 @@ export default function BleConnect() {
   const [bluetoothState, setBluetoothState] = useState('Unknown');
   const [permissionsGranted, setPermissionsGranted] = useState(false);
 
-useEffect(() => {
-  initializeBluetooth();
-
-  // Restore connection state if already connected
-  const status = BleStepService.getTrackingStatus();
-  if (status.hasDevice && BleStepService.connectedDevice) {
-    setConnectedDevice(BleStepService.connectedDevice);
-    setStatus('Connected');
-  }
-
-  return () => {
-    manager.stopDeviceScan();
-  };
-}, []);
-
-
-
-  // const initializeBluetooth = async () => {
-  //   const hasPermissions = await requestBluetoothPermissions();
-  //   setPermissionsGranted(hasPermissions);
-
-  //   if (!hasPermissions) {
-  //     setStatus('Permissions required');
-  //     return;
-  //   }
-
-  //   const state = await manager.state();
-  //   setBluetoothState(state);
-
-  //   if (state !== 'PoweredOn') {
-  //     setStatus('Turn on Bluetooth');
-  //   } else {
-  //     setStatus('Ready to scan');
-  //   }
-
-  //   const subscription = manager.onStateChange((state) => {
-  //     setBluetoothState(state);
-
-  //     if (state === 'PoweredOn') {
-  //       setStatus('Ready to scan');
-  //     } else if (state === 'PoweredOff') {
-  //       setStatus('Bluetooth is OFF');
-  //       setScanning(false);
-  //       manager.stopDeviceScan();
-  //     }
-  //   }, true);
-
-  //   return () => subscription.remove();
-  // };
+  // initializeBluetooth must be declared BEFORE useEffect that calls it.
   const initializeBluetooth = async () => {
     const hasPermissions = await requestBluetoothPermissions();
     setPermissionsGranted(hasPermissions);
@@ -106,6 +58,22 @@ useEffect(() => {
 
     return () => subscription.remove();
   };
+
+  useEffect(() => {
+    initializeBluetooth();
+
+    // Restore connection state if already connected (e.g. after tab switch)
+    const trackingStatus = BleStepService.getTrackingStatus();
+    if (trackingStatus.hasDevice && BleStepService.connectedDevice) {
+      setConnectedDevice(BleStepService.connectedDevice);
+      setStatus('Connected');
+    }
+
+    return () => {
+      manager.stopDeviceScan();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const checkBluetoothState = async () => {
     try {
@@ -382,14 +350,18 @@ useEffect(() => {
 
   const disconnectDevice = async () => {
     if (connectedDevice) {
+      // Clear from service first (stops step tracking subscription)
+      BleStepService.clearDevice();
       try {
-        BleStepService.clearDevice();
+        // cancelConnection is safe to call even if already disconnected;
+        // catch the error silently in that case.
         await connectedDevice.cancelConnection();
-        setConnectedDevice(null);
-        setStatus('Disconnected');
       } catch (err) {
-        console.error('Disconnect failed:', err);
+        // Device may already be disconnected — not a fatal error
+        console.warn('Disconnect warning (may already be disconnected):', err?.message);
       }
+      setConnectedDevice(null);
+      setStatus('Disconnected');
     }
   };
 

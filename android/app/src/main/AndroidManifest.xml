@@ -17,19 +17,21 @@
     <!-- Android 13+ Notification Permission -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
+    <!-- Background location for GPS tracking while backgrounded -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
     <!-- Optional: Background sensor access (not always needed) -->
-    <uses-permission android:name="android.permission.BODY_SENSORS_BACKGROUND" 
+    <uses-permission android:name="android.permission.BODY_SENSORS_BACKGROUND"
         tools:node="remove" />
-    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" 
+    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION"
         tools:node="remove" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 
-    <!-- Location REQUIRED for BLE scanning on Android 10 & 11 -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- ACCESS_FINE_LOCATION declared above (line 6) — required for BLE on Android 10/11 -->
     <uses-permission
-    android:name="android.permission.BLUETOOTH_SCAN"
-    android:usesPermissionFlags="neverForLocation" />
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <uses-feature
@@ -50,7 +52,7 @@
     android:supportsRtl="true"
     tools:targetApi="34">
         
-    <service 
+    <service
         android:name="com.walkingtracker.StepCounterService"
         android:foregroundServiceType="health"
         android:exported="false"
