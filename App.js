@@ -5,6 +5,7 @@ import WalkingTrackerScreen from './src/StepCounter';
 import BleConnect from './src/BleConnet';
 import ActivitiesScreen from './src/ActivitiesScreen';
 import BleStepService from './src/BleStepService';
+import SplashScreen from './src/SplashScreen';
 
 const TABS = [
   { id: 'tracker',    label: 'Track'  },
@@ -14,6 +15,7 @@ const TABS = [
 
 
 export default function App() {
+  const [splashDone, setSplashDone] = useState(false);
   const [activeTab, setActiveTab] = useState('tracker');
   const [hungerState, setHungerState] = useState('normal');
   const overlayOpacity = useRef(new Animated.Value(0)).current;
@@ -75,6 +77,7 @@ export default function App() {
   return (
     <SafeAreaProvider style={styles.appContainer}>
       <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+      {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
       <SafeAreaView style={styles.container}>
 
         {/* Header — tints when hungry */}
