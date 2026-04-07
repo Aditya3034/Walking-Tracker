@@ -56,6 +56,9 @@ yarn-error.log
 # Bundle artifact
 *.jsbundle
 
+# PlatformIO
+esp32/.pio/
+
 # Ruby / CocoaPods
 **/Pods/
 /vendor/bundle/
