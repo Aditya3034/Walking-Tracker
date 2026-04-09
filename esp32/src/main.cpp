@@ -5,6 +5,8 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <Preferences.h>
+#include "esp_mac.h"
+#include "esp_gap_ble_api.h"
 
 /* ---------------- BLE CONFIG ---------------- */
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -18,16 +20,16 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 Preferences prefs;
 
 /* ---------------- PET & EYE STATES ---------------- */
-enum PetMood { PET_NORMAL, PET_HUNGRY, PET_FEEDING };
+enum PetMood { PET_NORMAL, PET_HUNGRY, PET_STARVING, PET_FEEDING };
 PetMood petMood  = PET_NORMAL;
 PetMood prevMood = PET_NORMAL;
 
 enum EyeState {
-  STATE_NEUTRAL, STATE_ANGRY, STATE_SURPRISED, STATE_SAD,
+  STATE_NEUTRAL, STATE_SURPRISED, STATE_SAD,
   STATE_SUSPICIOUS, STATE_LEFT, STATE_RIGHT, STATE_UP,
-  STATE_DOWN, STATE_SLEEPY,
-  // New dedicated states
-  STATE_HUNGRY, STATE_HAPPY,
+  STATE_DOWN, STATE_EXCITED,
+  // Dedicated states (not in random idle pool)
+  STATE_HUNGRY, STATE_STARVING, STATE_HAPPY,
   STATE_COUNT
 };
 
@@ -36,14 +38,17 @@ const int screenWidth  = 128, screenHeight = 64;
 const int eyeBaseWidth = 30,  eyeBaseHeight = 44, eyeSpacing = 16;
 const int blinkDuration = 220, transitionDuration = 150;
 
-const unsigned long HUNGER_INTERVAL   = 15000;
-const unsigned long STARVING_INTERVAL = 30000;
-const unsigned long FEED_ANIM_DURATION = 3000; // extended for star show
+const unsigned long HUNGER_INTERVAL   = 7200000;  // 2 hours
+const unsigned long STARVING_INTERVAL = 3600000;  // 1 hour after hungry
+const unsigned long FEED_ANIM_DURATION = 3000;
 const unsigned long PERSIST_INTERVAL  = 5000;
 
 unsigned long lastBlinkTime = 0, lastStateChangeTime = 0;
 unsigned long transitionStartTime = 0, feedingStartTime = 0;
 unsigned long lastFedTime = 0, lastPersistTime = 0;
+
+// Whether stars should show during current feed animation
+bool feedShowStars = false;
 
 /* ---------------- BLE NOTIFY CHAR ---------------- */
 BLECharacteristic *pNotifyChar = nullptr;
@@ -67,6 +72,19 @@ float leftTargetWidth,  leftTargetHeight,  rightTargetWidth,  rightTargetHeight;
 float leftTargetOffsetX, leftTargetOffsetY, rightTargetOffsetX, rightTargetOffsetY;
 float leftTargetAngle,  rightTargetAngle;
 int   centerX, centerY, leftEyeX, rightEyeX, eyeY;
+
+
+/* ---------------- EXCITED BOUNCE ---------------- */
+float excitedBounceY = 0;
+
+void updateExcitedBounce(unsigned long now) {
+  if (currentEyeState == STATE_EXCITED) {
+    // Sine wave: period ~220ms, amplitude ±4px
+    excitedBounceY = sin((float)now / 35.0f) * 4.0f;
+  } else {
+    excitedBounceY = 0;
+  }
+}
 
 /* ---------------- STARS (feeding animation) ---------------- */
 struct Star { int x, y, size; unsigned long spawnTime; };
@@ -95,16 +113,15 @@ void clearStars() { starCount = 0; }
 
 // 4-point star: two crossed lines + diagonal lines
 void drawStar(int x, int y, int r) {
-  u8g2.drawLine(x, y - r, x, y + r);          // vertical
-  u8g2.drawLine(x - r, y, x + r, y);          // horizontal
+  u8g2.drawLine(x, y - r, x, y + r);
+  u8g2.drawLine(x - r, y, x + r, y);
   int d = r * 7 / 10;
-  u8g2.drawLine(x - d, y - d, x + d, y + d);  // diagonal /
-  u8g2.drawLine(x + d, y - d, x - d, y + d);  // diagonal (backslash)
+  u8g2.drawLine(x - d, y - d, x + d, y + d);
+  u8g2.drawLine(x + d, y - d, x - d, y + d);
 }
 
 void renderStars(unsigned long now) {
   for (int i = 0; i < starCount; i++) {
-    // Twinkle: alternate full / half size every 200ms
     unsigned long age = now - stars[i].spawnTime;
     int r = ((age / 200) % 2 == 0) ? stars[i].size : stars[i].size / 2 + 1;
     drawStar(stars[i].x, stars[i].y, r);
@@ -112,16 +129,49 @@ void renderStars(unsigned long now) {
 }
 
 /* ---------------- HUNGER SHAKE ---------------- */
-// When hungry, eyes jitter slightly left-right
+void setEyeState(EyeState newState);   // forward declaration
+void forceEyeState(EyeState newState); // forward declaration
+
 int shakeOffset = 0;
-unsigned long lastShakeTime = 0;
-const unsigned long SHAKE_INTERVAL = 400;
+unsigned long lastShakeTime    = 0;
+unsigned long shakeburstStart  = 0;
+bool shakeBurstActive          = false;
+bool shakeRight                = true;
+unsigned long nextShakeBurst   = 0;
 
 void updateHungerShake(unsigned long now) {
-  if (petMood != PET_HUNGRY) { shakeOffset = 0; return; }
-  if (now - lastShakeTime > SHAKE_INTERVAL) {
-    shakeOffset = (shakeOffset == 0) ? 2 : 0;
-    lastShakeTime = now;
+  if (petMood == PET_STARVING) {
+    if (!shakeBurstActive) {
+      shakeOffset = 0;
+      if (now >= nextShakeBurst) {
+        shakeBurstActive = true;
+        shakeburstStart  = now;
+        lastShakeTime    = now;
+        shakeRight       = true;
+        shakeOffset      = 8;
+      }
+    } else {
+      if (now - shakeburstStart > 2000) {
+        shakeBurstActive = false;
+        shakeOffset      = 0;
+        nextShakeBurst   = now + 5000 + random(1000);
+      } else {
+        if (now - lastShakeTime > 70) {
+          shakeRight    = !shakeRight;
+          shakeOffset   = shakeRight ? 8 : -8;
+          lastShakeTime = now;
+        }
+      }
+    }
+  } else if (petMood == PET_HUNGRY) {
+    shakeBurstActive = false;
+    if (now - lastShakeTime > 400) {
+      shakeOffset   = (shakeOffset == 0) ? 2 : 0;
+      lastShakeTime = now;
+    }
+  } else {
+    shakeOffset      = 0;
+    shakeBurstActive = false;
   }
 }
 
@@ -158,16 +208,26 @@ class MyCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pChar) {
     String value = pChar->getValue().c_str();
     if (value == "FEED") {
+      bool wasHungry   = (petMood == PET_HUNGRY || petMood == PET_STARVING);
       petMood          = PET_FEEDING;
       feedingStartTime = millis();
       lastFedTime      = millis();
       clearPersistedHunger();
-      spawnStars();
       notifyApp("FEEDING");
+      // Stars only when recovering from hunger; happy eyes only when already normal
+      feedShowStars = wasHungry;
+      if (feedShowStars) spawnStars();
     } else if (value == "CONNECTED") {
-      // App just connected — reply with current hunger state so UI syncs immediately
-      if (petMood == PET_HUNGRY) notifyApp("HUNGRY");
+      if (petMood == PET_STARVING) notifyApp("STARVING");
+      else if (petMood == PET_HUNGRY) notifyApp("HUNGRY");
       else notifyApp("NORMAL");
+    } else if (value.startsWith("NAME:")) {
+      String newName = value.substring(5);
+      newName.trim();
+      if (newName.length() > 0 && newName.length() <= 28) {
+        prefs.putString("deviceName", newName.c_str());
+        esp_ble_gap_set_device_name(newName.c_str());
+      }
     }
   }
 };
@@ -181,10 +241,6 @@ void updateEyeDimensions(EyeState state,
   lx = ly = rx = ry = la = ra = 0;
 
   switch (state) {
-    case STATE_ANGRY:
-      la = -0.5; ra = 0.5; lw *= 0.8; rw *= 0.8;
-      break;
-
     case STATE_SURPRISED:
       lw *= 1.3; lh = lw; rw *= 1.3; rh = rw;
       break;
@@ -193,28 +249,49 @@ void updateEyeDimensions(EyeState state,
       lh *= 0.7; rh *= 0.7; ly = ry = 8; la = 0; ra = 0;
       break;
 
-    // HUNGRY: droopy, narrow, tilted inward — clearly miserable
     case STATE_HUNGRY:
-      lh *= 0.55; rh *= 0.55;   // very flat / droopy
-      lw *= 0.85; rw *= 0.85;   // slightly narrower
-      ly = 10;    ry = 10;       // pushed down
-      la = 0.35;  ra = -0.35;    // strong inward tilt
+      lh *= 0.63; rh *= 0.63;
+      ly = 10;    ry = 10;
+      lx = 4;     rx = -4;
       break;
 
-    // HAPPY: tall wide eyes, slight upward offset — big bright expression
+    case STATE_STARVING:
+      lh *= 0.63; rh *= 0.63;
+      ly = 10;    ry = 10;
+      lx = 4;     rx = -4;
+      break;
+
     case STATE_HAPPY:
       lw *= 1.25; lh *= 1.25;
       rw *= 1.25; rh *= 1.25;
-      ly = -6;    ry = -6;       // lifted up
-      la = -0.1;  ra = 0.1;      // gentle outward tilt
+      ly = -6;    ry = -6;
       break;
 
     case STATE_SUSPICIOUS: break;
-    case STATE_LEFT:   lx = -10; rx = -12; break;
-    case STATE_RIGHT:  lx =  12; rx =  10; break;
-    case STATE_UP:     ly = ry = -12; break;
-    case STATE_DOWN:   ly = ry =  12; break;
-    case STATE_SLEEPY: lh *= 0.4; break;
+    case STATE_LEFT:
+      lx = -10; rx = -14;
+      lw *= 0.72; lh *= 0.72;
+      rw *= 0.88; rh *= 0.92;
+      break;
+    case STATE_RIGHT:
+      lx =  14; rx =  10;
+      rw *= 0.72; rh *= 0.72;
+      lw *= 0.88; lh *= 0.92;
+      break;
+    case STATE_UP:
+      ly = ry = -14;
+      lw *= 1.15; rw *= 1.15;
+      lh *= 0.70; rh *= 0.70;
+      break;
+    case STATE_DOWN:
+      ly = ry = 14;
+      lw *= 1.15; rw *= 1.15;
+      lh *= 0.70; rh *= 0.70;
+      break;
+    case STATE_EXCITED:
+      // Wide eyes (not tall) — energy comes from the bounce, not size
+      lw *= 1.3;  rw *= 1.3;
+      break;
     default: break;
   }
 }
@@ -228,6 +305,21 @@ void setEyeState(EyeState newState) {
     leftTargetWidth, leftTargetHeight, rightTargetWidth, rightTargetHeight,
     leftTargetOffsetX, leftTargetOffsetY, rightTargetOffsetX, rightTargetOffsetY,
     leftTargetAngle, rightTargetAngle);
+}
+
+void forceEyeState(EyeState newState) {
+  targetEyeState      = newState;
+  currentEyeState     = newState;
+  isTransitioning     = false;
+  updateEyeDimensions(newState,
+    leftTargetWidth, leftTargetHeight, rightTargetWidth, rightTargetHeight,
+    leftTargetOffsetX, leftTargetOffsetY, rightTargetOffsetX, rightTargetOffsetY,
+    leftTargetAngle, rightTargetAngle);
+  leftEyeWidth   = leftTargetWidth;   leftEyeHeight  = leftTargetHeight;
+  rightEyeWidth  = rightTargetWidth;  rightEyeHeight = rightTargetHeight;
+  leftOffsetX    = leftTargetOffsetX; leftOffsetY    = leftTargetOffsetY;
+  rightOffsetX   = rightTargetOffsetX; rightOffsetY  = rightTargetOffsetY;
+  leftAngle      = leftTargetAngle;   rightAngle     = rightTargetAngle;
 }
 
 /* ---------------- DRAWING ---------------- */
@@ -248,39 +340,6 @@ void drawFilledEllipse(int x0, int y0, int w, int h, float angle) {
   }
 }
 
-// XO marks drawn over eyes when hungry (teary X)
-void drawHungryMarks() {
-  int lx = leftEyeX  + (int)leftOffsetX  + shakeOffset;
-  int rx = rightEyeX + (int)rightOffsetX + shakeOffset;
-  int yl = eyeY + (int)leftOffsetY;
-  int yr = eyeY + (int)rightOffsetY;
-  int d = 5;
-  // Left eye: tiny X above
-  u8g2.drawLine(lx - d, yl - (int)(leftEyeHeight/2) - 6,
-                lx + d, yl - (int)(leftEyeHeight/2) - 2);
-  u8g2.drawLine(lx + d, yl - (int)(leftEyeHeight/2) - 6,
-                lx - d, yl - (int)(leftEyeHeight/2) - 2);
-  // Right eye: tiny X above
-  u8g2.drawLine(rx - d, yr - (int)(rightEyeHeight/2) - 6,
-                rx + d, yr - (int)(rightEyeHeight/2) - 2);
-  u8g2.drawLine(rx + d, yr - (int)(rightEyeHeight/2) - 6,
-                rx - d, yr - (int)(rightEyeHeight/2) - 2);
-}
-
-// Small tear drops below each eye when hungry
-void drawTears() {
-  int lx = leftEyeX  + (int)leftOffsetX  + shakeOffset;
-  int rx = rightEyeX + (int)rightOffsetX + shakeOffset;
-  int tearY = eyeY + (int)(leftEyeHeight / 2) + 4;
-  // Teardrop = small filled triangle pointing down
-  u8g2.drawLine(lx - 2, tearY,     lx + 2, tearY);
-  u8g2.drawLine(lx - 2, tearY,     lx,     tearY + 4);
-  u8g2.drawLine(lx + 2, tearY,     lx,     tearY + 4);
-  u8g2.drawLine(rx - 2, tearY,     rx + 2, tearY);
-  u8g2.drawLine(rx - 2, tearY,     rx,     tearY + 4);
-  u8g2.drawLine(rx + 2, tearY,     rx,     tearY + 4);
-}
-
 /* ---------------- SETUP ---------------- */
 void setup() {
   u8g2.begin();
@@ -297,7 +356,17 @@ void setup() {
   unsigned long savedElapsed = prefs.getULong("elapsed", 0);
   lastFedTime = millis() - savedElapsed;
 
-  BLEDevice::init("PetLocket");
+  String savedName = prefs.getString("deviceName", "");
+  char bleName[32];
+  if (savedName.length() > 0) {
+    strncpy(bleName, savedName.c_str(), sizeof(bleName) - 1);
+    bleName[sizeof(bleName) - 1] = '\0';
+  } else {
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BT);
+    snprintf(bleName, sizeof(bleName), "softwear-%02X%02X", mac[4], mac[5]);
+  }
+  BLEDevice::init(bleName);
   BLEServer  *pServer  = BLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -311,7 +380,10 @@ void setup() {
   pNotifyChar->addDescriptor(new BLE2902());
 
   pService->start();
-  BLEDevice::getAdvertising()->start();
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->start();
 
   lastPersistTime = millis();
 }
@@ -324,9 +396,14 @@ void loop() {
   if (petMood == PET_FEEDING) {
     setEyeState(STATE_HAPPY);
     if (now - feedingStartTime > FEED_ANIM_DURATION) {
-      petMood = PET_NORMAL;
+      petMood       = PET_NORMAL;
+      feedShowStars = false;
       clearStars();
     }
+  }
+  else if (now - lastFedTime > HUNGER_INTERVAL + STARVING_INTERVAL) {
+    petMood = PET_STARVING;
+    setEyeState(STATE_STARVING);
   }
   else if (now - lastFedTime > HUNGER_INTERVAL) {
     petMood = PET_HUNGRY;
@@ -335,9 +412,7 @@ void loop() {
   else {
     petMood = PET_NORMAL;
     if (!isTransitioning && now - lastStateChangeTime > (unsigned long)random(3000, 7000)) {
-      // Don't randomly pick HUNGRY or HAPPY states — those are mood-driven only
-      EyeState pick;
-      do { pick = (EyeState)random(STATE_SLEEPY + 1); } while (pick == STATE_HUNGRY || pick == STATE_HAPPY);
+      EyeState pick = (EyeState)random(STATE_EXCITED + 1);  // states 0..8 (idle pool)
       setEyeState(pick);
       lastStateChangeTime = now;
     }
@@ -345,23 +420,30 @@ void loop() {
 
   // 2. NOTIFY APP ON MOOD CHANGE
   if (petMood != prevMood) {
-    if (petMood == PET_HUNGRY) notifyApp("HUNGRY");
+    if (petMood == PET_HUNGRY)   notifyApp("HUNGRY");
+    if (petMood == PET_STARVING) notifyApp("STARVING");
     if (petMood == PET_NORMAL && prevMood != PET_FEEDING) notifyApp("NORMAL");
     prevMood = petMood;
   }
 
   // 3. PERSIST HUNGER
-  if (petMood == PET_HUNGRY && now - lastPersistTime > PERSIST_INTERVAL) {
+  if ((petMood == PET_HUNGRY || petMood == PET_STARVING) && now - lastPersistTime > PERSIST_INTERVAL) {
     persistHungerState();
     lastPersistTime = now;
   }
 
-  // 4. HUNGER SHAKE
+  // 4. HUNGER SHAKE + EXCITED BOUNCE
   updateHungerShake(now);
+  updateExcitedBounce(now);
 
-  // 5. BLINK — disabled while feeding or hungry
-  if (petMood != PET_FEEDING && petMood != PET_HUNGRY) {
-    if (!isBlinking && now - lastBlinkTime > (unsigned long)random(2000, 5000)) {
+  // 5. BLINK — disabled while feeding; hungry blinks slowly; starving blinks only when calm
+  if (petMood != PET_FEEDING && !(petMood == PET_STARVING && shakeBurstActive)) {
+    unsigned long blinkInterval = (petMood == PET_HUNGRY || petMood == PET_STARVING)
+      ? (unsigned long)random(6000, 10000)
+      : (currentEyeState == STATE_EXCITED)
+        ? (unsigned long)random(400, 900)   // rapid blinking when excited
+        : (unsigned long)random(2000, 5000);
+    if (!isBlinking && now - lastBlinkTime > blinkInterval) {
       isBlinking = true; blinkState = 1; lastBlinkTime = now;
     }
     if (isBlinking && now - lastBlinkTime > blinkDuration / 4) {
@@ -370,7 +452,7 @@ void loop() {
       lastBlinkTime = now;
     }
   } else {
-    isBlinking = false; blinkState = 0; // reset mid-blink frames for feeding/hungry
+    isBlinking = false; blinkState = 0;
   }
 
   // 6. TRANSITION LERPING
@@ -398,16 +480,12 @@ void loop() {
   int lxDraw = leftEyeX  + (int)leftOffsetX  + shakeOffset;
   int rxDraw = rightEyeX + (int)rightOffsetX + shakeOffset;
 
-  drawFilledEllipse(lxDraw, eyeY + (int)leftOffsetY,  leftEyeWidth,  leftEyeHeight  * openness, leftAngle);
-  drawFilledEllipse(rxDraw, eyeY + (int)rightOffsetY, rightEyeWidth, rightEyeHeight * openness, rightAngle);
+  int bounce = (int)excitedBounceY;
+  drawFilledEllipse(lxDraw, eyeY + (int)leftOffsetY  + bounce, leftEyeWidth,  leftEyeHeight  * openness, leftAngle);
+  drawFilledEllipse(rxDraw, eyeY + (int)rightOffsetY + bounce, rightEyeWidth, rightEyeHeight * openness, rightAngle);
 
-  // Hungry extras: tears only
-  if (petMood == PET_HUNGRY) {
-    drawTears();
-  }
-
-  // Feeding extras: stars around screen
-  if (petMood == PET_FEEDING) {
+  // Stars only when recovering from hunger
+  if (petMood == PET_FEEDING && feedShowStars) {
     renderStars(now);
   }
 

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   Platform, ActivityIndicator, Alert, Linking, NativeModules, NativeEventEmitter, ToastAndroid,
+  TextInput,
 } from 'react-native';
 import { requestMultiple, PERMISSIONS, RESULTS } from 'react-native-permissions';
 import BleStepService from './BleStepService';
@@ -27,6 +28,9 @@ export default function BleConnect() {
   const [status, setStatus] = useState('Initializing...');
   const [bluetoothState, setBluetoothState] = useState('Unknown');
   const [permissionsGranted, setPermissionsGranted] = useState(false);
+  const [petName, setPetName] = useState('');
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState('');
 
   const bleSubscriptionRef = useRef(null);
   const btRetryTimeoutRef  = useRef(null);
@@ -53,6 +57,14 @@ export default function BleConnect() {
     await setupBluetooth();
   };
 
+  // Load saved pet name
+  useEffect(() => {
+    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    AsyncStorage.getItem('petName').then(val => {
+      if (val) setPetName(val);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     initializeBluetooth();
 
@@ -66,13 +78,16 @@ export default function BleConnect() {
         wasConnectedRef.current = true;
         isConnectedRef.current = true;
         BleStepService.isConnectedState = true;
-        // Restore persisted name if JS-side name was lost (app reopen)
-        if (!BleStepService.deviceName) {
-          const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-          const saved = await AsyncStorage.getItem('bleDeviceName').catch(() => null);
-          BleStepService.deviceName = saved || 'Pet Locket';
-        }
-        setConnectedDevice({ id: '', name: BleStepService.deviceName });
+        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+        // Always prefer user-set petName, fall back to BLE device name
+        const [savedPetName, savedBleName] = await Promise.all([
+          AsyncStorage.getItem('petName').catch(() => null),
+          AsyncStorage.getItem('bleDeviceName').catch(() => null),
+        ]);
+        const displayName = savedPetName || savedBleName || 'softwear';
+        BleStepService.deviceName = displayName;
+        if (savedPetName) setPetName(savedPetName);
+        setConnectedDevice({ id: '', name: displayName });
         setStatus('Connected');
       } else {
         const shouldToast = wasConnectedRef.current;
@@ -157,7 +172,7 @@ export default function BleConnect() {
     setStatus('Scanning...');
 
     // Filter by service UUID so only PetLocket devices appear
-    manager.startDeviceScan(null, null, (error, device) => {
+    manager.startDeviceScan([APP_SERVICE_UUID], null, (error, device) => {
       if (error) {
         console.error('Scan error:', error);
         setScanning(false);
@@ -215,19 +230,22 @@ export default function BleConnect() {
       if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
       setStatus('Connecting...');
 
-      const name = device.name || device.id;
+      const bleDeviceName = device.name || device.id;
 
       // Hand off to native service — it owns the connection from here
       await StepCounter.connectBleDevice(device.id);
 
-      // Persist name so it survives app reopen
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      await AsyncStorage.setItem('bleDeviceName', name).catch(() => {});
+      await AsyncStorage.setItem('bleDeviceName', bleDeviceName).catch(() => {});
+
+      // Prefer user-set pet name, fall back to BLE device name
+      const savedPetName = await AsyncStorage.getItem('petName').catch(() => null);
+      const displayName = savedPetName || bleDeviceName;
 
       wasConnectedRef.current = true;
       isConnectedRef.current = true;
-      BleStepService.setDeviceName(name);
-      setConnectedDevice({ id: device.id, name });
+      BleStepService.setDeviceName(displayName);
+      setConnectedDevice({ id: device.id, name: displayName });
       setStatus('Connected');
     } catch (err) {
       console.error('Connection failed:', err);
@@ -296,7 +314,50 @@ export default function BleConnect() {
               <View style={styles.connectedIconDot} />
             </View>
             <Text style={styles.connectedTitle}>Device Connected</Text>
-            <Text style={styles.connectedName}>{connectedDevice.name}</Text>
+
+            {/* Pet name — tap to edit */}
+            {editingName ? (
+              <View style={styles.nameEditRow}>
+                <TextInput
+                  style={styles.nameInput}
+                  value={nameInput}
+                  onChangeText={setNameInput}
+                  autoFocus
+                  maxLength={24}
+                  placeholder="Name your pet"
+                  placeholderTextColor={C.text3}
+                />
+                <TouchableOpacity
+                  style={styles.nameSaveBtn}
+                  onPress={async () => {
+                    const trimmed = nameInput.trim();
+                    if (trimmed) {
+                      setPetName(trimmed);
+                      BleStepService.deviceName = trimmed;
+                      setConnectedDevice(prev => prev ? { ...prev, name: trimmed } : prev);
+                      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+                      await AsyncStorage.setItem('petName', trimmed).catch(() => {});
+                      // Write to ESP32 so it persists on the device too
+                      await BleStepService.writeToDevice(`NAME:${trimmed}`).catch(() => {});
+                    }
+                    setEditingName(false);
+                  }}
+                >
+                  <Text style={styles.nameSaveBtnText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.nameRow}
+                onPress={() => { setNameInput(petName); setEditingName(true); }}
+              >
+                <Text style={styles.connectedName}>
+                  {petName || connectedDevice.name}
+                </Text>
+                <Text style={styles.editHint}>  edit</Text>
+              </TouchableOpacity>
+            )}
+
             <Text style={styles.connectedInfo}>
               Connection is maintained in the background
             </Text>
@@ -397,4 +458,10 @@ const styles = StyleSheet.create({
   connectedInfo: { fontSize: 13, color: C.text3, textAlign: 'center', marginBottom: 28, lineHeight: 20 },
   disconnectButton: { backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', paddingHorizontal: 32, paddingVertical: 13, borderRadius: 10 },
   disconnectButtonText: { color: C.danger, fontWeight: '800', fontSize: 12, letterSpacing: 1.5 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  editHint: { fontSize: 11, color: C.text3, fontWeight: '500' },
+  nameEditRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 8 },
+  nameInput: { flex: 1, borderWidth: 1, borderColor: C.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15, fontWeight: '600', color: C.text, backgroundColor: C.bg },
+  nameSaveBtn: { backgroundColor: C.primary, paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8 },
+  nameSaveBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
 });

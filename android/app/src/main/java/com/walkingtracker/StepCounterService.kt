@@ -78,8 +78,21 @@ class StepCounterService : Service(), SensorEventListener {
     private var locationManager: LocationManager? = null
     private val routePoints = mutableListOf<Pair<Double, Double>>()
 
+    private var lastAcceptedLocation: Location? = null
+
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
+            // Reject low-accuracy fixes (e.g. network/wifi guesses)
+            if (location.hasAccuracy() && location.accuracy > 30f) return
+
+            // Reject spikes — same 150m threshold used on the JS side
+            val last = lastAcceptedLocation
+            if (last != null && last.distanceTo(location) > 150f) {
+                lastAcceptedLocation = location  // update anchor so next real point isn't blocked
+                return
+            }
+
+            lastAcceptedLocation = location
             routePoints.add(Pair(location.latitude, location.longitude))
             persistRoute()
         }
@@ -368,6 +381,7 @@ class StepCounterService : Service(), SensorEventListener {
                 hardwareStepCount = -1; initialHardwareSteps = -1
                 algorithmStepCount = 0; fusedStepCount = 0
                 routePoints.clear()
+                lastAcceptedLocation = null
                 trackingActive = false
                 getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
