@@ -12,6 +12,7 @@ import {
   AppState,
   Modal,
   Dimensions,
+  Linking,
 } from 'react-native';
 import {
   request,
@@ -24,6 +25,7 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 import Svg, { Path, Polyline, Rect, Circle } from 'react-native-svg';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
+import PetConnectCard from './PetConnectCard';
 
 const { StepCounter } = NativeModules;
 if (!StepCounter) {
@@ -136,9 +138,7 @@ function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
   );
 }
 
-// Accepts routeSegments (array of arrays) and renders each segment as a separate polyline.
-// All segments share the same projection so coordinates are consistent.
-function RouteOutline({ routeSegments, isTracking, width = 340, height = 260 }) {
+function RouteOutline({ routeSegments, isTracking, color = '#EE5514', width = 340, height = 260 }) {
   const allPoints = routeSegments.flat();
   if (allPoints.length < 1) return null;
 
@@ -173,7 +173,7 @@ function RouteOutline({ routeSegments, isTracking, width = 340, height = 260 }) 
               key={i}
               points={poly}
               fill="none"
-              stroke="#000000"
+              stroke={color}
               strokeWidth="3"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -194,7 +194,7 @@ function RouteOutline({ routeSegments, isTracking, width = 340, height = 260 }) 
 
 /* -------------------- SESSION SUMMARY MODAL -------------------- */
 
-function SessionSummaryModal({ visible, steps, routeSegments, treatsEarned, onClose }) {
+function SessionSummaryModal({ visible, steps, routeSegments, treatsEarned, routeColor = '#EE5514', onClose }) {
   const treats = treatsEarned || 0;
   const hasRoute = Array.isArray(routeSegments) && routeSegments.flat().length >= 1;
   const routeW = SCREEN_WIDTH - 80;
@@ -213,6 +213,7 @@ function SessionSummaryModal({ visible, steps, routeSegments, treatsEarned, onCl
               <RouteOutline
                 routeSegments={routeSegments}
                 isTracking={false}
+                color={routeColor}
                 width={routeW}
                 height={routeH}
               />
@@ -270,6 +271,8 @@ export default function WalkingTrackerScreen() {
   const [routeSegments, setRouteSegments] = useState([]);
   const [summaryVisible, setSummaryVisible] = useState(false);
   const [summaryData, setSummaryData] = useState(null);
+  const [gpsWaiting, setGpsWaiting] = useState(false);
+  const [petColor, setPetColor] = useState('#EE5514');
 
   const watchIdRef = useRef(null);
   const sessionOffsetRef = useRef(null);
@@ -279,10 +282,13 @@ export default function WalkingTrackerScreen() {
   const lastGpsPosRef = useRef(null);
   const sessionTreatsRef = useRef(0); // treats earned in current session (prevents double-counting)
 
-  /* -------- load persisted treats on mount -------- */
+  /* -------- load persisted treats + petColor on mount -------- */
   useEffect(() => {
     AsyncStorage.getItem('pendingTreats').then(val => {
       if (val !== null) setPendingTreats(parseInt(val, 10) || 0);
+    }).catch(() => {});
+    AsyncStorage.getItem('petColor').then(val => {
+      if (val && val !== '#f1f5f9' && val !== '#ffffff') setPetColor(val);
     }).catch(() => {});
   }, []);
 
@@ -421,6 +427,7 @@ export default function WalkingTrackerScreen() {
           }
         }
         lastGpsPosRef.current = { latitude, longitude };
+        setGpsWaiting(false);
 
         setRouteSegments(prev => {
           if (!prev.length) return prev;
@@ -502,6 +509,7 @@ export default function WalkingTrackerScreen() {
     await AsyncStorage.setItem('sessionInProgress', 'true');
     setRouteSegments([[]]); // fresh first segment
     sessionOffsetRef.current = null;
+    setGpsWaiting(true);
     watchIdRef.current = startGpsWatch();
 
     if (!isSensorStartedRef.current) {
@@ -527,6 +535,7 @@ export default function WalkingTrackerScreen() {
   const resumeTracking = () => {
     // Start a new segment — new points won't be connected to the pre-pause segment
     setRouteSegments(prev => [...prev, []]);
+    setGpsWaiting(true);
     watchIdRef.current = startGpsWatch();
     setTrackingState('tracking');
   };
@@ -545,6 +554,7 @@ export default function WalkingTrackerScreen() {
       Geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
+    setGpsWaiting(false);
 
     BleStepService.stopStepTracking();
     isSensorStartedRef.current = false;
@@ -602,6 +612,9 @@ export default function WalkingTrackerScreen() {
     <>
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
 
+      {/* Pet connect card */}
+      <PetConnectCard />
+
       {/* Steps ring */}
       <View style={styles.stepsCard}>
         <SemiCircleProgress progress={ringProgress} />
@@ -655,10 +668,24 @@ export default function WalkingTrackerScreen() {
         </View>
       )}
 
-      {/* GPS acquiring */}
-      {trackingState === 'tracking' && allRoutePoints.length === 0 && (
-        <View style={styles.gpsWaiting}>
-          <Text style={styles.gpsWaitingText}>Waiting for GPS signal…</Text>
+      {/* GPS waiting banner */}
+      {gpsWaiting && (
+        <View style={styles.gpsBanner}>
+          <Text style={styles.gpsBannerTitle}>Waiting for GPS…</Text>
+          <Text style={styles.gpsBannerSub}>Make sure location is turned on</Text>
+          <TouchableOpacity
+            style={styles.gpsBannerBtn}
+            onPress={() => {
+              if (Platform.OS === 'android') {
+                Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => Linking.openSettings());
+              } else {
+                Linking.openURL('App-Prefs:Privacy&path=LOCATION').catch(() => Linking.openSettings());
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.gpsBannerBtnText}>Open Location Settings</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -667,6 +694,7 @@ export default function WalkingTrackerScreen() {
         <RouteOutline
           routeSegments={routeSegments}
           isTracking={trackingState === 'tracking'}
+          color={petColor}
         />
       )}
 
@@ -705,6 +733,7 @@ export default function WalkingTrackerScreen() {
         steps={summaryData.steps}
         routeSegments={summaryData.routeSegments}
         treatsEarned={summaryData.treatsEarned}
+        routeColor={petColor}
         onClose={handleSummaryClose}
       />
     )}
@@ -715,7 +744,7 @@ export default function WalkingTrackerScreen() {
 /* -------------------- STYLES -------------------- */
 
 const C = {
-  bg:        '#f8fafc',
+  bg:        '#ffffff',
   card:      '#ffffff',
   primary:   '#0f172a',
   accent:    '#2563eb',
@@ -750,8 +779,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   centerSteps: { position: 'absolute', top: '38%', alignItems: 'center' },
-  stepsNumber: { fontSize: 52, fontWeight: '900', color: C.text, letterSpacing: -1 },
-  stepsLabel: { fontSize: 12, color: C.text3, fontWeight: '600', letterSpacing: 1.5, textTransform: 'uppercase', marginTop: 2 },
+  stepsNumber: { fontSize: 52, fontWeight: '900', color: C.text },
+  stepsLabel: { fontSize: 12, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
 
   /* Status badge */
   statusBadge: {
@@ -768,7 +797,7 @@ const styles = StyleSheet.create({
   statusBadgePaused: { backgroundColor: '#fef3c7' },
   statusDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
   statusDotPaused: { backgroundColor: C.warning },
-  statusBadgeText: { fontSize: 11, fontWeight: '700', color: C.success, letterSpacing: 1.5, textTransform: 'uppercase' },
+  statusBadgeText: { fontSize: 11, fontWeight: '700', color: C.success, textTransform: 'uppercase' },
   statusBadgeTextPaused: { color: C.warning },
 
   /* Start button */
@@ -786,7 +815,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   startButtonIcon: { fontSize: 16, color: '#fff' },
-  startButtonText: { color: '#fff', fontSize: 15, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase' },
+  startButtonText: { color: '#fff', fontSize: 15, fontWeight: '800', textTransform: 'uppercase' },
 
   /* Pause / Resume / Finish row */
   controlRow: { flexDirection: 'row', gap: 10, marginBottom: 6 },
@@ -830,16 +859,26 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   controlIcon: { fontSize: 14, color: '#fff' },
-  controlText: { color: '#fff', fontSize: 13, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase' },
+  controlText: { color: '#fff', fontSize: 13, fontWeight: '700', textTransform: 'uppercase' },
 
-  /* GPS waiting */
-  gpsWaiting: {
+  /* GPS waiting banner */
+  gpsBanner: {
     ...card,
     marginTop: 16,
-    padding: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
     alignItems: 'center',
+    gap: 4,
   },
-  gpsWaitingText: { color: C.text3, fontSize: 13, fontWeight: '500', letterSpacing: 0.3 },
+  gpsBannerTitle: { fontSize: 13, fontWeight: '700', color: C.text },
+  gpsBannerSub: { fontSize: 11, color: C.text3, marginBottom: 8 },
+  gpsBannerBtn: {
+    backgroundColor: C.primary,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+  },
+  gpsBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 
   /* Treats */
   treatsCard: {
@@ -849,7 +888,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   treatsHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
-  treatsTitle: { fontSize: 14, fontWeight: '700', color: C.text, letterSpacing: 0.5, textTransform: 'uppercase' },
+  treatsTitle: { fontSize: 14, fontWeight: '700', color: C.text, textTransform: 'uppercase' },
   treatsBadge: {
     backgroundColor: C.warning,
     borderRadius: 12,
@@ -867,7 +906,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 12,
   },
-  feedButtonText: { color: '#fff', fontWeight: '700', fontSize: 13, letterSpacing: 0.5 },
+  feedButtonText: { color: '#fff', fontWeight: '700', fontSize: 13},
 });
 
 const summaryStyles = StyleSheet.create({
@@ -889,7 +928,6 @@ const summaryStyles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     color: C.text,
-    letterSpacing: 2.5,
     textTransform: 'uppercase',
     marginBottom: 20,
   },
@@ -904,8 +942,8 @@ const summaryStyles = StyleSheet.create({
     marginBottom: 20,
   },
   statBox: { alignItems: 'center' },
-  statValue: { fontSize: 42, fontWeight: '900', color: C.text, letterSpacing: -1 },
-  statLabel: { fontSize: 11, color: C.text3, fontWeight: '600', letterSpacing: 1.5, textTransform: 'uppercase', marginTop: 4 },
+  statValue: { fontSize: 42, fontWeight: '900', color: C.text},
+  statLabel: { fontSize: 11, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 4 },
   treatsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -925,6 +963,5 @@ const summaryStyles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '800',
-    letterSpacing: 0.5,
   },
 });

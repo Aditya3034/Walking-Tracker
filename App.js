@@ -2,15 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StatusBar, StyleSheet, View, TouchableOpacity, Text, Animated } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import WalkingTrackerScreen from './src/StepCounter';
-import BleConnect from './src/BleConnet';
 import ActivitiesScreen from './src/ActivitiesScreen';
 import BleStepService from './src/BleStepService';
 import SplashScreen from './src/SplashScreen';
+import MapTestScreen from './src/MapTestScreen';
 
 const TABS = [
-  { id: 'tracker',    label: 'Track'  },
-  { id: 'bluetooth',  label: 'Device' },
-  { id: 'activities', label: 'Log'    },
+  { id: 'tracker',    label: 'Track' },
+  { id: 'activities', label: 'Log'   },
+  { id: 'map',        label: 'Map (TEST)'   },
 ];
 
 
@@ -104,8 +104,8 @@ export default function App() {
               style={{ flex: 1, display: activeTab === tab.id ? 'flex' : 'none' }}
             >
               {tab.id === 'tracker'    && <WalkingTrackerScreen />}
-              {tab.id === 'bluetooth'  && <BleConnect />}
               {tab.id === 'activities' && <ActivitiesScreen isActive={activeTab === 'activities'} />}
+              {tab.id === 'map'        && <MapTestScreen isActive={activeTab === 'map'} />}
             </View>
           ))}
 
@@ -144,7 +144,7 @@ export default function App() {
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#ffffff',
   },
   container: {
     flex: 1,
@@ -167,13 +167,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#0f172a',
     textAlign: 'center',
-    letterSpacing: 3,
   },
   hungerLabel: {
     fontSize: 9,
     fontWeight: '800',
     color: '#d97706',
-    letterSpacing: 2,
     marginTop: 3,
     textTransform: 'uppercase',
   },
@@ -204,7 +202,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: '#94a3b8',
-    letterSpacing: 1.5,
     textTransform: 'uppercase',
   },
   tabLabelActive: {

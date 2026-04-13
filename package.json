@@ -17,12 +17,14 @@
     "react-native": "^0.83.1",
     "react-native-android-location-enabler": "^3.0.1",
     "react-native-ble-plx": "^3.5.0",
+    "react-native-config": "^1.6.1",
     "react-native-geolocation-service": "^5.3.1",
     "react-native-health": "^1.19.0",
     "react-native-maps": "^1.27.1",
     "react-native-permissions": "^5.5.1",
     "react-native-safe-area-context": "^5.6.2",
-    "react-native-svg": "^15.15.1"
+    "react-native-svg": "^15.15.1",
+    "react-native-webview": "^13.16.1"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

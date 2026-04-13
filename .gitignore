@@ -76,3 +76,4 @@ esp32/.pio/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+.env
