@@ -16,12 +16,10 @@ const APP_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
 
 /* ── Radar layout constants ── */
 const RADAR_SIZE = 260;
-const RC = RADAR_SIZE / 2;          // radar centre
+const RC = RADAR_SIZE / 2;
 const DEVICE_SIZE = 50;
 const RING_RADII = [90, 110, 120];
 
-// Generate device slot positions with a random angle offset so the device
-// doesn't always appear in the same spot
 function makeDeviceSlots(angleOffsetDeg = 0) {
   return Array.from({ length: 6 }, (_, i) => {
     const angle = (i * 137.508 + angleOffsetDeg) * (Math.PI / 180);
@@ -35,7 +33,6 @@ function makeDeviceSlots(angleOffsetDeg = 0) {
 
 const PET_COLORS = ['#ea580c', '#2563eb', '#16a34a', '#9333ea', '#db2777', '#dc2626'];
 
-/* ── Pet icon: matches swlogo.svg exactly ── */
 function PetIcon({ size = 40, borderColor = null, style }) {
   return (
     <Image
@@ -51,7 +48,6 @@ function PetIcon({ size = 40, borderColor = null, style }) {
   );
 }
 
-/* ── Animated radar rings ── */
 const RING_RADII_ANIM = [40, 70, 100, 130];
 
 function RadarRings({ active, found }) {
@@ -65,14 +61,12 @@ function RadarRings({ active, found }) {
       return;
     }
     if (found) {
-      // Stop looping, fade all rings to their static opacity
       loopRef.current?.stop();
       Animated.parallel(
         anims.map(a => Animated.timing(a, { toValue: 1, duration: 300, useNativeDriver: true }))
       ).start();
       return;
     }
-    // Pulse loop
     loopRef.current?.stop();
     const loop = Animated.loop(
       Animated.parallel(
@@ -97,7 +91,6 @@ function RadarRings({ active, found }) {
           width: r * 2, height: r * 2,
           borderRadius: r,
           borderWidth: 1,
-          // innermost (i=0, r=30) darkest → outermost (i=3, r=120) lightest
           borderColor: `rgba(0,0,0,${(4 - i) * 0.03})`,
           left: RC - r, top: RC - r,
           opacity: anims[i],
@@ -107,10 +100,10 @@ function RadarRings({ active, found }) {
   );
 }
 
-export default function BleConnect() {
-  const [devices, setDevices] = useState([]);          // shown on radar (delayed)
+export default function PetConnectCard() {
+  const [devices, setDevices] = useState([]);
   const [deviceSlots, setDeviceSlots] = useState(() => makeDeviceSlots(0));
-  const pendingDevicesRef = useRef([]);                // found by BLE immediately
+  const pendingDevicesRef = useRef([]);
   const revealTimerRef = useRef(null);
   const [connectedDevice, setConnectedDevice] = useState(null);
   const [, setScanning] = useState(false);
@@ -119,13 +112,12 @@ export default function BleConnect() {
   const [permissionsGranted, setPermissionsGranted] = useState(false);
   const [petName, setPetName] = useState('');
   const [petColor, setPetColor] = useState(PET_COLORS[0]);
-  const [editingName, setEditingName] = useState(false);
+  const [editModalVisible, setEditModalVisible] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const deviceIdRef = useRef('');
 
-  // Modal state
   const [modalVisible, setModalVisible] = useState(false);
-  const [modalPhase, setModalPhase] = useState('idle'); // 'idle'|'scanning'|'connecting'|'connected'
+  const [modalPhase, setModalPhase] = useState('idle');
 
   const bleSubscriptionRef = useRef(null);
   const btRetryTimeoutRef  = useRef(null);
@@ -135,10 +127,8 @@ export default function BleConnect() {
   const closeTimerRef      = useRef(null);
   const modalPhaseRef      = useRef('idle');
 
-  // Keep ref in sync so BleConnectionUpdate handler can read current phase
   useEffect(() => { modalPhaseRef.current = modalPhase; }, [modalPhase]);
 
-  /* ── BLE state listener ── */
   const setupBluetooth = async () => {
     bleSubscriptionRef.current?.remove();
     bleSubscriptionRef.current = manager.onStateChange((state) => {
@@ -185,7 +175,6 @@ export default function BleConnect() {
         setConnectedDevice({ id: '', name: displayName });
         setStatus('Connected');
 
-        // If modal is in connecting phase, show connected then auto-close
         if (modalPhaseRef.current === 'connecting') {
           setModalPhase('connected');
           closeTimerRef.current = setTimeout(() => {
@@ -288,10 +277,8 @@ export default function BleConnect() {
         return;
       }
       if (!device) return;
-      // Buffer the device — don't show on radar yet
       if (pendingDevicesRef.current.find(d => d.id === device.id)) return;
       pendingDevicesRef.current = [...pendingDevicesRef.current, device];
-      // Reveal on radar after 2.5s so the animation plays first
       if (!revealTimerRef.current) {
         revealTimerRef.current = setTimeout(() => {
           setDevices([...pendingDevicesRef.current]);
@@ -361,7 +348,7 @@ export default function BleConnect() {
       setStatus('Connected');
     } catch (err) {
       setStatus('Connection failed');
-      setModalPhase('scanning'); // go back to radar on failure
+      setModalPhase('scanning');
       Alert.alert('Connection Failed', err.message || 'Unknown error');
     }
   };
@@ -393,7 +380,7 @@ export default function BleConnect() {
 
   const isReady = permissionsGranted && bluetoothState === 'PoweredOn';
 
-  /* ── Scan modal content ── */
+  /* ── Modal content ── */
   const renderModalContent = () => {
     if (modalPhase === 'connecting' || modalPhase === 'connected') {
       const isConnected = modalPhase === 'connected';
@@ -411,7 +398,6 @@ export default function BleConnect() {
       return (
         <View style={ms.radarContainer}>
           <RadarRings active={modalPhase === 'scanning'} found={devices.length > 0} />
-          {/* Devices on radar */}
           {devices.slice(0, 6).map((device, i) => (
             <TouchableOpacity
               key={device.id}
@@ -422,7 +408,6 @@ export default function BleConnect() {
               <PetIcon size={DEVICE_SIZE} borderColor={petColor} />
             </TouchableOpacity>
           ))}
-          {/* Centre locating button */}
           <TouchableOpacity style={ms.centerBtn} activeOpacity={1}>
             <Text style={ms.centerBtnText}>locating</Text>
           </TouchableOpacity>
@@ -438,100 +423,102 @@ export default function BleConnect() {
           onPress={isReady ? startScan : openBluetoothSettings}
           activeOpacity={0.8}
         >
-          <Text style={ms.idleScanBtnText}>{isReady ? 'scan' : 'bt off'}</Text>
+          <Text style={ms.idleScanBtnText}>{isReady ? 'scan' : 'turn on bluetooth'}</Text>
         </TouchableOpacity>
       </View>
     );
   };
 
+  /* ── Inline card ── */
   return (
-    <View style={styles.container}>
-      {/* Connected view */}
-      {connectedDevice ? (
-        <View style={styles.connectedContainer}>
-          <View style={styles.connectedCard}>
-            <PetIcon size={80} borderColor={petColor} />
-
-            <Text style={styles.connectedLabel}>connected</Text>
-
-            {editingName ? (
-              <View style={styles.nameEditRow}>
-                <TextInput
-                  style={styles.nameInput}
-                  value={nameInput}
-                  onChangeText={setNameInput}
-                  autoFocus
-                  maxLength={24}
-                  placeholder="Name your pet"
-                  placeholderTextColor="#94a3b8"
-                />
-                <TouchableOpacity
-                  style={styles.nameSaveBtn}
-                  onPress={async () => {
-                    const trimmed = nameInput.trim();
-                    if (trimmed) {
-                      setPetName(trimmed);
-                      BleStepService.deviceName = trimmed;
-                      setConnectedDevice(prev => prev ? { ...prev, name: trimmed } : prev);
-                      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-                      await AsyncStorage.setItem('petName', trimmed).catch(() => {});
-                      await BleStepService.writeToDevice(`NAME:${trimmed}`).catch(() => {});
-                    }
-                    setEditingName(false);
-                  }}
-                >
-                  <Text style={styles.nameSaveBtnText}>Save</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
+    <>
+      <View style={cs.card}>
+        {connectedDevice ? (
+          <>
+            <View style={cs.left}>
+              <PetIcon size={34} borderColor={petColor} />
               <TouchableOpacity
-                style={styles.nameRow}
-                onPress={() => { setNameInput(petName); setEditingName(true); }}
+                style={cs.nameRow}
+                onPress={() => { setNameInput(petName || connectedDevice.name); setEditModalVisible(true); }}
               >
-                <Text style={styles.connectedName}>{petName || connectedDevice.name}</Text>
-                <Text style={styles.editHint}>  edit</Text>
+                <Text style={cs.petName}>{petName || connectedDevice.name}</Text>
+                <Text style={cs.editHint}>  edit</Text>
               </TouchableOpacity>
-            )}
+            </View>
+            <TouchableOpacity style={cs.disconnectBtn} onPress={disconnectDevice}>
+              <Text style={cs.disconnectText}>disconnect</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <View style={cs.left}>
+              <PetIcon size={34} borderColor={null} style={{ opacity: 0.45 }} />
+              <Text style={cs.connectLabel}>Connect your pet</Text>
+            </View>
+            <TouchableOpacity style={cs.connectBtn} onPress={openModal} activeOpacity={0.8}>
+              <Text style={cs.connectBtnText}>Connect</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
 
-            {/* Color picker */}
-            <View style={styles.colorRow}>
+      {/* Edit modal */}
+      <Modal visible={editModalVisible} transparent animationType="fade" onRequestClose={() => setEditModalVisible(false)}>
+        <View style={em.backdrop}>
+          <View style={em.sheet}>
+            <Text style={em.title}>Edit Pet</Text>
+
+            <PetIcon size={64} borderColor={petColor} style={{ marginBottom: 20 }} />
+
+            <Text style={em.label}>Name</Text>
+            <TextInput
+              style={em.input}
+              value={nameInput}
+              onChangeText={setNameInput}
+              autoFocus
+              maxLength={24}
+              placeholder="Name your pet"
+              placeholderTextColor="#94a3b8"
+            />
+
+            <Text style={em.label}>Color</Text>
+            <View style={em.colorRow}>
               {PET_COLORS.map(c => (
                 <TouchableOpacity
                   key={c}
-                  onPress={async () => {
-                    setPetColor(c);
-                    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-                    await AsyncStorage.setItem('petColor', c).catch(() => {});
-                  }}
-                  style={[styles.colorSwatch, { backgroundColor: c }, petColor === c && styles.colorSwatchSelected]}
+                  onPress={() => setPetColor(c)}
+                  style={[em.swatch, { backgroundColor: c }, petColor === c && em.swatchSelected]}
                 />
               ))}
             </View>
 
-            <Text style={styles.connectedSub}>Connection maintained in background</Text>
-            <TouchableOpacity style={styles.disconnectBtn} onPress={disconnectDevice}>
-              <Text style={styles.disconnectBtnText}>DISCONNECT</Text>
-            </TouchableOpacity>
+            <View style={em.btnRow}>
+              <TouchableOpacity style={em.cancelBtn} onPress={() => setEditModalVisible(false)}>
+                <Text style={em.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={em.saveBtn}
+                onPress={async () => {
+                  const trimmed = nameInput.trim();
+                  if (trimmed) {
+                    setPetName(trimmed);
+                    BleStepService.deviceName = trimmed;
+                    setConnectedDevice(prev => prev ? { ...prev, name: trimmed } : prev);
+                    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+                    await AsyncStorage.setItem('petName', trimmed).catch(() => {});
+                    await BleStepService.writeToDevice(`NAME:${trimmed}`).catch(() => {});
+                  }
+                  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+                  await AsyncStorage.setItem('petColor', petColor).catch(() => {});
+                  setEditModalVisible(false);
+                }}
+              >
+                <Text style={em.saveBtnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-      ) : (
-        /* Not connected — just show scan trigger */
-        <View style={styles.scanTriggerArea}>
-          <TouchableOpacity style={styles.scanTriggerBtn} onPress={openModal} activeOpacity={0.8}>
-            <Text style={styles.scanTriggerText}>scan</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* BT / permission warnings */}
-      {bluetoothState !== 'PoweredOn' && bluetoothState !== 'Unknown' && !connectedDevice && (
-        <View style={styles.warningCard}>
-          <Text style={styles.warningText}>Bluetooth is {bluetoothState}</Text>
-          <TouchableOpacity style={styles.warningBtn} onPress={openBluetoothSettings}>
-            <Text style={styles.warningBtnText}>OPEN SETTINGS</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      </Modal>
 
       {/* Scan modal */}
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={closeModal}>
@@ -544,54 +531,140 @@ export default function BleConnect() {
           </View>
         </View>
       </Modal>
-    </View>
+    </>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f0f0f0' },
-
-  // Scan trigger (not connected)
-  scanTriggerArea: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scanTriggerBtn: {
-    width: 80, height: 80, borderRadius: 40,
-    backgroundColor: '#111',
-    alignItems: 'center', justifyContent: 'center',
+/* ── Card styles ── */
+const cs = StyleSheet.create({
+  card: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  scanTriggerText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-
-  // Warnings
-  warningCard: {
-    position: 'absolute', bottom: 32, left: 24, right: 24,
-    backgroundColor: '#fff', borderRadius: 14, padding: 16,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 4,
+  left: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
   },
-  warningText: { fontSize: 13, color: '#92400e', fontWeight: '600', flex: 1 },
-  warningBtn: { backgroundColor: '#f59e0b', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
-  warningBtnText: { color: '#fff', fontWeight: '800', fontSize: 11 },
-
-  // Connected card
-  connectedContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
-  connectedCard: {
-    backgroundColor: '#fff', borderRadius: 24, padding: 36,
-    alignItems: 'center', width: '100%',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.07, shadowRadius: 16, elevation: 4,
+  connectLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
   },
-  connectedLabel: { fontSize: 13, color: '#16a34a', fontWeight: '700', marginTop: 18, marginBottom: 6 },
-  connectedName: { fontSize: 16, fontWeight: '700', color: '#0f172a' },
-  connectedSub: { fontSize: 12, color: '#94a3b8', marginTop: 6, marginBottom: 24, textAlign: 'center' },
-  disconnectBtn: { backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', paddingHorizontal: 28, paddingVertical: 12, borderRadius: 10 },
-  disconnectBtnText: { color: '#dc2626', fontWeight: '800', fontSize: 11 },
-  nameRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2, marginBottom: 4 },
+  connectBtn: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  connectBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  petName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
   editHint: { fontSize: 11, color: '#94a3b8', fontWeight: '500' },
-  nameEditRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, gap: 8 },
-  nameInput: { flex: 1, borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15, fontWeight: '600', color: '#0f172a', backgroundColor: '#f8fafc' },
-  nameSaveBtn: { backgroundColor: '#2563eb', paddingHorizontal: 16, paddingVertical: 9, borderRadius: 8 },
-  nameSaveBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
-  colorRow: { flexDirection: 'row', gap: 10, marginTop: 14, marginBottom: 4 },
-  colorSwatch: { width: 22, height: 22, borderRadius: 11 },
-  colorSwatchSelected: { borderWidth: 2.5, borderColor: '#0f172a' },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
+  disconnectBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    backgroundColor: '#fef2f2',
+  },
+  disconnectText: { fontSize: 11, color: '#dc2626', fontWeight: '700' },
+});
+
+/* ── Edit modal styles ── */
+const em = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheet: {
+    width: 320,
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    paddingHorizontal: 28,
+    paddingVertical: 28,
+    alignItems: 'center',
+  },
+  title: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0f172a',
+    textTransform: 'uppercase',
+    marginBottom: 20,
+  },
+  label: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+    textTransform: 'uppercase',
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  input: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0f172a',
+    backgroundColor: '#f8fafc',
+    marginBottom: 20,
+  },
+  colorRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 28,
+  },
+  swatch: { width: 26, height: 26, borderRadius: 13 },
+  swatchSelected: { borderWidth: 3, borderColor: '#0f172a' },
+  btnRow: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    alignItems: 'center',
+  },
+  cancelBtnText: { fontSize: 14, fontWeight: '600', color: '#64748b' },
+  saveBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    backgroundColor: '#0f172a',
+    alignItems: 'center',
+  },
+  saveBtnText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 });
 
 /* ── Modal styles ── */
@@ -612,10 +685,8 @@ const ms = StyleSheet.create({
   },
   closeBtnText: { fontSize: 22, color: '#111', fontWeight: '300', lineHeight: 26 },
 
-  // Idle
   idleContainer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
 
-  // Radar — absolutely centered in the 320×400 card
   radarContainer: {
     position: 'absolute',
     width: RADAR_SIZE, height: RADAR_SIZE,
@@ -624,7 +695,6 @@ const ms = StyleSheet.create({
   },
   radarDevice: { position: 'absolute' },
 
-  // Centre button
   centerBtn: {
     position: 'absolute',
     width: 100, height: 100, borderRadius: 50,
@@ -633,16 +703,14 @@ const ms = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   centerBtnDisabled: { backgroundColor: '#94a3b8' },
-  // Non-absolute version for idle — positioned by flexbox in idleContainer
   idleScanBtn: {
     width: 100, height: 100, borderRadius: 50,
     backgroundColor: '#111',
     alignItems: 'center', justifyContent: 'center',
   },
   centerBtnText: { color: '#111111', fontSize: 13, fontWeight: '600' },
-  idleScanBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  idleScanBtnText: { color: '#fff', fontSize: 11, fontWeight: '600', textAlign: 'center', paddingHorizontal: 10 },
 
-  // Connecting / connected
   phaseContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   largeIcon: { marginBottom: 20 },
   phaseLabel: { fontSize: 13, color: '#94a3b8', fontWeight: '500' },

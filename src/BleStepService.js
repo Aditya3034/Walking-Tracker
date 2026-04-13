@@ -1,119 +1,124 @@
 import { NativeModules, NativeEventEmitter } from 'react-native';
-import { Buffer } from 'buffer';
 
 const { StepCounter } = NativeModules;
-const eventEmitter = new NativeEventEmitter(StepCounter);
-
-const APP_SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
-const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+const eventEmitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
 
 class BleStepService {
   constructor() {
-    this.connectedDevice = null;
-    this.stepSubscription = null;
-    this.isTracking = false;
-  }
+    this.isConnectedState    = false;
+    this.deviceName          = null;
+    this.hungerState         = 'normal';
+    this.hungerListeners     = [];
+    this.disconnectListeners = [];
 
-  /* ---------- CONNECTION MANAGEMENT ---------- */
+    if (eventEmitter) {
+      // Hunger state pushed from ESP32 via native service
+      eventEmitter.addListener('BleHungerUpdate', (msg) => {
+        this._handleHungerNotification(msg);
+      });
 
-  setConnectedDevice(device) {
-    this.connectedDevice = device;
-    console.log('✅ BLE Device set:', device?.name || device?.id);
-
-    device.onDisconnected((error) => {
-      console.log('❌ BLE Disconnected:', error?.message || 'OK');
-      this.clearDevice();
-    });
-  }
-
-  clearDevice() {
-    this.stopStepTracking();
-    this.connectedDevice = null;
-  }
-
-  getDevice() {
-    return this.connectedDevice;
-  }
-
-  isConnected() {
-    return !!this.connectedDevice;
-  }
-
-  /* ---------- LOW-LEVEL WRITE ---------- */
-
-  async writeRaw(message) {
-    if (!this.connectedDevice) {
-      console.warn('⚠️ No BLE device connected');
-      return false;
-    }
-
-    try {
-      await this.connectedDevice.writeCharacteristicWithResponseForService(
-        APP_SERVICE_UUID,
-        CHARACTERISTIC_UUID,
-        Buffer.from(message, 'utf8').toString('base64')
-      );
-      console.log(`📤 Sent to ESP32: ${message}`);
-      return true;
-    } catch (error) {
-      console.error('❌ BLE write failed:', error);
-      return false;
+      // Connection state changes from native GATT
+      eventEmitter.addListener('BleConnectionUpdate', (state) => {
+        if (state === 'connected') {
+          this.isConnectedState = true;
+        } else {
+          this.isConnectedState = false;
+          this.deviceName = null;
+          this._setHungerState('normal');
+          this.disconnectListeners.forEach(fn => { try { fn(); } catch (e) {} });
+        }
+      });
     }
   }
 
-  /* ---------- COMMANDS (PET CONTROL) ---------- */
+  /* ---------- CONNECTION ---------- */
+
+  // Called by BleConnet when user picks device from scan list
+  setDeviceName(name) {
+    this.deviceName = name;
+    this.isConnectedState = true;
+  }
+
+  async clearDevice() {
+    if (StepCounter?.disconnectBleDevice) {
+      try { await StepCounter.disconnectBleDevice(); } catch (e) {}
+    }
+    this.isConnectedState = false;
+    this.deviceName = null;
+    this._setHungerState('normal');
+    this.disconnectListeners.forEach(fn => { try { fn(); } catch (e) {} });
+  }
+
+  onDisconnect(callback) {
+    this.disconnectListeners.push(callback);
+    return () => {
+      this.disconnectListeners = this.disconnectListeners.filter(fn => fn !== callback);
+    };
+  }
+
+  /* ---------- HUNGER ---------- */
+
+  _handleHungerNotification(msg) {
+    if (msg === 'HUNGRY')  this._setHungerState('hungry');
+    if (msg === 'STARVING') this._setHungerState('starving');
+    if (msg === 'FEEDING') this._setHungerState('normal');
+    if (msg === 'NORMAL')  this._setHungerState('normal');
+  }
+
+  _setHungerState(state) {
+    const uiState = state === 'feeding' ? 'normal' : state;
+    if (this.hungerState === uiState) return;
+    this.hungerState = uiState;
+    this.hungerListeners.forEach(fn => fn(uiState));
+  }
+
+  getHungerState() { return this.hungerState; }
+
+  onHungerChange(callback) {
+    this.hungerListeners.push(callback);
+    return () => {
+      this.hungerListeners = this.hungerListeners.filter(fn => fn !== callback);
+    };
+  }
+
+  /* ---------- FEED ---------- */
+
+  recordFeed() {
+    this._setHungerState('normal');
+  }
+
+  /* ---------- WRITE ---------- */
 
   async writeToDevice(command) {
-    // For commands like "FEED"
-    return this.writeRaw(command);
-  }
-
-  /* ---------- STEP STREAMING ---------- */
-
-  async sendStepCount(steps) {
-    const message = `STEPS:${Math.round(steps)}`;
-    return this.writeRaw(message);
-  }
-
-  startStepTracking() {
-    if (this.isTracking) return;
-    if (!this.connectedDevice) {
-      console.warn('⚠️ Cannot start tracking - no BLE device');
-      return;
+    if (!StepCounter?.writeBleCommand) return false;
+    try {
+      await StepCounter.writeBleCommand(command);
+      return true;
+    } catch (e) {
+      console.error('writeBleCommand failed:', e);
+      return false;
     }
-
-    this.stepSubscription = eventEmitter.addListener(
-      'StepCounterUpdate',
-      (steps) => {
-        this.sendStepCount(steps);
-      }
-    );
-
-    this.isTracking = true;
-    console.log('🏃 Step tracking started');
   }
 
-  stopStepTracking() {
-    if (this.stepSubscription) {
-      this.stepSubscription.remove();
-      this.stepSubscription = null;
-    }
-    this.isTracking = false;
-    console.log('⏸️ Step tracking stopped');
+  async writeRaw(message) {
+    return this.writeToDevice(message);
   }
 
-  /* ---------- STATUS FOR UI ---------- */
+  /* ---------- STATUS ---------- */
+
+  isConnected() { return this.isConnectedState; }
 
   getTrackingStatus() {
     return {
-      isTracking: this.isTracking,
-      hasDevice: !!this.connectedDevice,
-      deviceName:
-        this.connectedDevice?.name ||
-        this.connectedDevice?.id ||
-        null,
+      isTracking: false,
+      hasDevice:  this.isConnectedState,
+      deviceName: this.deviceName,
     };
   }
+
+  /* ---------- STEP TRACKING (native service handles streaming) ---------- */
+  startStepTracking() {}
+  stopStepTracking() {}
 }
 
 export default new BleStepService();

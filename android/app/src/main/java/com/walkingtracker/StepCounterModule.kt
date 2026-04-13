@@ -155,8 +155,13 @@ import android.util.Log
 import kotlin.math.sqrt
 import kotlin.math.abs
 
-class StepCounterModule(reactContext: ReactApplicationContext) : 
+class StepCounterModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext), SensorEventListener {
+
+    init {
+        // Share context with the background service so it can emit events to JS
+        StepCounterService.setReactContext(reactContext)
+    }
     
     private val sensorManager: SensorManager = 
         reactContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -189,15 +194,16 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
         initialHardwareSteps = -1
         algorithmStepCount = 0
         fusedStepCount = 0
-        
-        stepCounterSensor?.let { 
+
+        // Tell service not to emit StepCounterUpdate (this module will)
+        StepCounterService.foregroundModuleActive = true
+        sendActionToService(StepCounterService.ACTION_FOREGROUND_ACTIVE)
+
+        stepCounterSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
-            Log.d("StepCounter", "Hardware sensor started")
         }
-        
         accelerometerSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-            Log.d("StepCounter", "Accelerometer started")
         }
     }
 
@@ -208,32 +214,31 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
         initialHardwareSteps = -1
         algorithmStepCount = 0
         fusedStepCount = 0
-        Log.d("StepCounter", "Sensors stopped")
+
+        // Let service emit steps again now that foreground module stopped
+        StepCounterService.foregroundModuleActive = false
+        sendActionToService(StepCounterService.ACTION_FOREGROUND_INACTIVE)
     }
 
     @ReactMethod
     fun startBackgroundService(promise: Promise) {
         try {
+            // Start the service as foreground first
             val serviceIntent = Intent(reactApplicationContext, StepCounterService::class.java)
-            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 reactApplicationContext.startForegroundService(serviceIntent)
             } else {
                 reactApplicationContext.startService(serviceIntent)
             }
-            
+            // Then signal it to start tracking sensors + GPS
+            sendActionToService(StepCounterService.ACTION_START_TRACKING)
+            StepCounterService.trackingActive = true
             promise.resolve(true)
-            Log.d("StepCounter", "Background service started")
-            
         } catch (e: IllegalStateException) {
-            Log.e("StepCounter", "Cannot start service: ${e.message}")
-            promise.reject("SERVICE_START_FAILED", 
-                "Cannot start service from background. Keep app open.", e)
+            promise.reject("SERVICE_START_FAILED", "Cannot start service from background.", e)
         } catch (e: SecurityException) {
-            Log.e("StepCounter", "Permission denied: ${e.message}")
             promise.reject("PERMISSION_DENIED", "Missing permissions", e)
         } catch (e: Exception) {
-            Log.e("StepCounter", "Service error: ${e.message}")
             promise.reject("UNKNOWN_ERROR", "Failed to start: ${e.message}", e)
         }
     }
@@ -241,15 +246,119 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun stopBackgroundService(promise: Promise) {
         try {
-            val serviceIntent = Intent(reactApplicationContext, StepCounterService::class.java)
-            reactApplicationContext.stopService(serviceIntent)
+            sendActionToService(StepCounterService.ACTION_STOP_TRACKING)
+            sendActionToService(StepCounterService.ACTION_FOREGROUND_INACTIVE)
+            StepCounterService.foregroundModuleActive = false
+            StepCounterService.trackingActive = false
             promise.resolve(true)
-            Log.d("StepCounter", "Background service stopped")
         } catch (e: Exception) {
-            Log.e("StepCounter", "Error stopping: ${e.message}")
             promise.reject("STOP_FAILED", "Failed to stop service", e)
         }
     }
+
+    @ReactMethod
+    fun getBackgroundSteps(promise: Promise) {
+        val prefs = reactApplicationContext.getSharedPreferences(
+            StepCounterService.PREFS_NAME, android.content.Context.MODE_PRIVATE
+        )
+        promise.resolve(prefs.getInt(StepCounterService.PREFS_STEPS_KEY, 0))
+    }
+
+    @ReactMethod
+    fun getBackgroundRoute(promise: Promise) {
+        val prefs = reactApplicationContext.getSharedPreferences(
+            StepCounterService.PREFS_NAME, android.content.Context.MODE_PRIVATE
+        )
+        promise.resolve(prefs.getString(StepCounterService.PREFS_ROUTE_KEY, "[]"))
+    }
+
+    /* -------- BLE Bridge -------- */
+
+    @ReactMethod
+    fun connectBleDevice(deviceId: String, promise: Promise) {
+        try {
+            // Persist so service auto-reconnects after app kill
+            reactApplicationContext.getSharedPreferences(
+                StepCounterService.PREFS_NAME, Context.MODE_PRIVATE
+            ).edit().putString(StepCounterService.BLE_PREFS_KEY, deviceId).apply()
+
+            val intent = Intent(reactApplicationContext, StepCounterService::class.java)
+            intent.action = StepCounterService.ACTION_CONNECT_BLE
+            intent.putExtra("deviceId", deviceId)
+            reactApplicationContext.startService(intent)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("BLE_CONNECT_FAILED", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun disconnectBleDevice(promise: Promise) {
+        try {
+            reactApplicationContext.getSharedPreferences(
+                StepCounterService.PREFS_NAME, Context.MODE_PRIVATE
+            ).edit().remove(StepCounterService.BLE_PREFS_KEY).apply()
+
+            val intent = Intent(reactApplicationContext, StepCounterService::class.java)
+            intent.action = StepCounterService.ACTION_DISCONNECT_BLE
+            reactApplicationContext.startService(intent)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("BLE_DISCONNECT_FAILED", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun writeBleCommand(command: String, promise: Promise) {
+        try {
+            val intent = Intent(reactApplicationContext, StepCounterService::class.java)
+            intent.action = StepCounterService.ACTION_WRITE_BLE
+            intent.putExtra("command", command)
+            reactApplicationContext.startService(intent)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("BLE_WRITE_FAILED", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun getBleHungerState(promise: Promise) {
+        val prefs = reactApplicationContext.getSharedPreferences(
+            StepCounterService.PREFS_NAME, Context.MODE_PRIVATE
+        )
+        promise.resolve(prefs.getString(StepCounterService.BLE_HUNGER_KEY, "NORMAL"))
+    }
+
+    @ReactMethod
+    fun clearSessionData(promise: Promise) {
+        try {
+            sendActionToService(StepCounterService.ACTION_CLEAR_SESSION)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("CLEAR_FAILED", e.message, e)
+        }
+    }
+
+    // Triggers BleConnectionUpdate + BleHungerUpdate events so JS can sync state on reopen
+    @ReactMethod
+    fun queryBleState(promise: Promise) {
+        try {
+            sendActionToService(StepCounterService.ACTION_QUERY_BLE_STATE)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("QUERY_FAILED", e.message, e)
+        }
+    }
+
+    private fun sendActionToService(action: String) {
+        val intent = Intent(reactApplicationContext, StepCounterService::class.java)
+        intent.action = action
+        reactApplicationContext.startService(intent)
+    }
+
+    // Required by RN event emitter
+    @ReactMethod fun addListener(eventName: String) {}
+    @ReactMethod fun removeListeners(count: Int) {}
 
     override fun onSensorChanged(event: SensorEvent?) {
         event?.let {
@@ -281,14 +390,16 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
-        
+
         currentAcceleration = sqrt(x * x + y * y + z * z)
         isWalking = currentAcceleration in 8.5f..14.0f
-        
+
         if (isWalking) {
+            // detectStepFromAccelerometer calls fuseStepCounts() only when a step is detected
             detectStepFromAccelerometer(currentAcceleration, System.currentTimeMillis())
         }
-        
+        // Do NOT call fuseStepCounts() here — that would emit an event on every ~50Hz sample
+
         lastAcceleration = currentAcceleration
     }
 
@@ -307,7 +418,7 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
     }
 
     private fun fuseStepCounts() {
-        fusedStepCount = when {
+        val newFused = when {
             stepCounterSensor != null && hardwareStepCount >= 0 -> {
                 if (algorithmStepCount > 0) {
                     val diff = abs(hardwareStepCount - algorithmStepCount)
@@ -323,8 +434,14 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
             algorithmStepCount > 0 -> algorithmStepCount
             else -> 0
         }
-        
-        sendEvent("StepCounterUpdate", fusedStepCount.toDouble())
+
+        // Only emit when the count actually changes to avoid flooding JS
+        if (newFused != fusedStepCount) {
+            fusedStepCount = newFused
+            sendEvent("StepCounterUpdate", fusedStepCount.toDouble())
+        } else {
+            fusedStepCount = newFused
+        }
     }
 
     private fun sendEvent(eventName: String, steps: Double) {

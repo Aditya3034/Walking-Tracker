@@ -1,59 +1,141 @@
-import React, { useState } from 'react';
-import { StatusBar, StyleSheet, View, TouchableOpacity, Text } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StatusBar, StyleSheet, View, TouchableOpacity, Text, Animated } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import WalkingTrackerScreen from './src/StepCounter';
-import BleConnect from './src/BleConnet';
+import ActivitiesScreen from './src/ActivitiesScreen';
+import BleStepService from './src/BleStepService';
+import SplashScreen from './src/SplashScreen';
+import MapTestScreen from './src/MapTestScreen';
+
+const TABS = [
+  { id: 'tracker',    label: 'Track' },
+  { id: 'activities', label: 'Log'   },
+  { id: 'map',        label: 'Map (TEST)'   },
+];
+
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('tracker'); // 'tracker' or 'bluetooth'
+  const [splashDone, setSplashDone] = useState(false);
+  const [activeTab, setActiveTab] = useState('tracker');
+  const [hungerState, setHungerState] = useState('normal');
+  const overlayOpacity = useRef(new Animated.Value(0)).current;
+  const overlayColor = useRef(new Animated.Value(0)).current; // 0=amber, 1=red
+
+  useEffect(() => {
+    // Ask native service to re-emit BLE + hunger state — restores UI after app reopen
+    const { StepCounter } = require('react-native').NativeModules;
+    StepCounter?.queryBleState?.()?.catch?.(() => {});
+  }, []);
+
+  useEffect(() => {
+    const applyHungerState = (state) => {
+      setHungerState(state);
+      if (state === 'normal') {
+        Animated.timing(overlayOpacity, {
+          toValue: 0,
+          duration: 800,
+          useNativeDriver: false,
+        }).start();
+      } else {
+        Animated.parallel([
+          Animated.timing(overlayOpacity, {
+            toValue: 1,
+            duration: 1200,
+            useNativeDriver: false,
+          }),
+          Animated.timing(overlayColor, {
+            toValue: state === 'starving' ? 1 : 0,
+            duration: 1500,
+            useNativeDriver: false,
+          }),
+        ]).start();
+      }
+    };
+
+    const unsubscribe = BleStepService.onHungerChange(applyHungerState);
+
+    // Sync immediately in case the native event fired before this listener was registered
+    const current = BleStepService.getHungerState();
+    if (current !== 'normal') applyHungerState(current);
+
+    return () => unsubscribe();
+  }, [overlayOpacity, overlayColor]);
+
+  // Interpolate between amber and red as hunger worsens
+  const overlayBg = overlayColor.interpolate({
+    inputRange:  [0, 1],
+    outputRange: ['rgba(251,191,36,0.18)', 'rgba(220,38,38,0.22)'],
+  });
+
+  const headerBg = overlayColor.interpolate({
+    inputRange:  [0, 1],
+    outputRange: ['rgba(254,243,199,0.9)', 'rgba(254,226,226,0.9)'],
+  });
+
+  const isHungry = hungerState !== 'normal';
 
   return (
     <SafeAreaProvider style={styles.appContainer}>
       <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+      {!splashDone && <SplashScreen onComplete={() => setSplashDone(true)} />}
       <SafeAreaView style={styles.container}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>softwear.pet</Text>
-        </View>
 
-        {/* Tab Content */}
+        {/* Header — tints when hungry */}
+        <Animated.View style={[
+          styles.header,
+          isHungry && { backgroundColor: headerBg, borderBottomColor: 'transparent' },
+        ]}>
+          <Text style={styles.headerTitle}>SOFTWEAR.PET</Text>
+          {isHungry && (
+            <Text style={[
+              styles.hungerLabel,
+              hungerState === 'starving' && styles.hungerLabelStarving,
+            ]}>
+              {hungerState === 'starving' ? 'VERY HUNGRY' : 'HUNGRY'}
+            </Text>
+          )}
+        </Animated.View>
+
         <View style={styles.content}>
-          <View style={{ flex: 1, display: activeTab === 'tracker' ? 'flex' : 'none' }}>
-            <WalkingTrackerScreen />
-          </View>
+          {/* Content */}
+          {TABS.map(tab => (
+            <View
+              key={tab.id}
+              style={{ flex: 1, display: activeTab === tab.id ? 'flex' : 'none' }}
+            >
+              {tab.id === 'tracker'    && <WalkingTrackerScreen />}
+              {tab.id === 'activities' && <ActivitiesScreen isActive={activeTab === 'activities'} />}
+              {tab.id === 'map'        && <MapTestScreen isActive={activeTab === 'map'} />}
+            </View>
+          ))}
 
-          <View style={{ flex: 1, display: activeTab === 'bluetooth' ? 'flex' : 'none' }}>
-            <BleConnect />
-          </View>
+          {/* Hunger overlay — sits on top of content, pointer-events none so taps pass through */}
+          {isHungry && (
+            <Animated.View
+              pointerEvents="none"
+              style={[StyleSheet.absoluteFill, { backgroundColor: overlayBg, opacity: overlayOpacity }]}
+            />
+          )}
         </View>
 
-
-        {/* Bottom Tab Bar */}
         <View style={styles.tabBar}>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'tracker' && styles.tabActive]}
-            onPress={() => setActiveTab('tracker')}
-          >
-            <Text style={[styles.tabIcon, activeTab === 'tracker' && styles.tabIconActive]}>
-              🏃
-            </Text>
-            <Text style={[styles.tabLabel, activeTab === 'tracker' && styles.tabLabelActive]}>
-              Tracker
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'bluetooth' && styles.tabActive]}
-            onPress={() => setActiveTab('bluetooth')}
-          >
-            <Text style={[styles.tabIcon, activeTab === 'bluetooth' && styles.tabIconActive]}>
-              📡
-            </Text>
-            <Text style={[styles.tabLabel, activeTab === 'bluetooth' && styles.tabLabelActive]}>
-              Device
-            </Text>
-          </TouchableOpacity>
+          {TABS.map(tab => {
+            const active = activeTab === tab.id;
+            return (
+              <TouchableOpacity
+                key={tab.id}
+                style={[styles.tab, active && styles.tabActive]}
+                onPress={() => setActiveTab(tab.id)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
+
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -62,68 +144,68 @@ export default function App() {
 const styles = StyleSheet.create({
   appContainer: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#ffffff',
   },
   container: {
     flex: 1,
   },
   header: {
-    backgroundColor: '#fff',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
+    backgroundColor: '#ffffff',
+    paddingVertical: 18,
+    paddingHorizontal: 24,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
-    elevation: 2,
+    borderBottomColor: '#e2e8f0',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 2,
+    alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#2c3e50',
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0f172a',
     textAlign: 'center',
+  },
+  hungerLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#d97706',
+    marginTop: 3,
+    textTransform: 'uppercase',
+  },
+  hungerLabelStarving: {
+    color: '#dc2626',
   },
   content: {
     flex: 1,
   },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffff',
     borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    paddingBottom: 8,
-    paddingTop: 8,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    borderTopColor: '#e2e8f0',
+    paddingBottom: 6,
   },
   tab: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 12,
+    borderTopWidth: 2,
+    borderTopColor: 'transparent',
   },
   tabActive: {
-    borderTopWidth: 3,
-    borderTopColor: '#2196f3',
-  },
-  tabIcon: {
-    fontSize: 24,
-    marginBottom: 4,
-    opacity: 0.5,
-  },
-  tabIconActive: {
-    opacity: 1,
+    borderTopColor: '#2563eb',
   },
   tabLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    color: '#999',
+    color: '#94a3b8',
+    textTransform: 'uppercase',
   },
   tabLabelActive: {
-    color: '#2196f3',
+    color: '#2563eb',
+    fontWeight: '700',
   },
 });

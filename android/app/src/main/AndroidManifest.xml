@@ -3,10 +3,15 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     
     <!-- Foreground Service Permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     
     <!-- Step Counter Permissions -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
@@ -14,19 +19,18 @@
     <!-- Android 13+ Notification Permission -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
-    <!-- Optional: Background sensor access (not always needed) -->
-    <uses-permission android:name="android.permission.BODY_SENSORS_BACKGROUND" 
-        tools:node="remove" />
-    <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" 
-        tools:node="remove" />
+    <!-- Background location for GPS tracking while backgrounded -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Keeps CPU alive during background step counting on aggressive OEM battery managers -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 
-    <!-- Location REQUIRED for BLE scanning on Android 10 & 11 -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- ACCESS_FINE_LOCATION declared above (line 6) — required for BLE on Android 10/11 -->
     <uses-permission
-    android:name="android.permission.BLUETOOTH_SCAN"
-    android:usesPermissionFlags="neverForLocation" />
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <uses-feature
@@ -37,34 +41,35 @@
         android:required="false" />
 
     <application
-        android:name=".MainApplication"
+    android:name=".MainApplication"
+    android:label="@string/app_name"
+    android:icon="@mipmap/ic_launcher"
+    android:roundIcon="@mipmap/ic_launcher_round"
+    android:allowBackup="false"
+    android:theme="@style/AppTheme"
+    android:usesCleartextTraffic="${usesCleartextTraffic}"
+    android:supportsRtl="true"
+    tools:targetApi="34">
+        
+    <service
+        android:name="com.walkingtracker.StepCounterService"
+        android:foregroundServiceType="health|location|connectedDevice"
+        android:exported="false"
+        android:enabled="true" />
+
+    <activity
+        android:name=".MainActivity"
+        android:exported="true"
+        android:launchMode="singleTask"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+        android:windowSoftInputMode="adjustResize"
         android:label="@string/app_name"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:allowBackup="false"
-        android:theme="@style/AppTheme"
-        android:usesCleartextTraffic="${usesCleartextTraffic}"
-        android:supportsRtl="true"
-        tools:targetApi="34">
+        android:theme="@style/AppTheme">
+        <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent-filter>
+    </activity>
+</application>
 
-        <service 
-            android:name="com.walkingtracker.StepCounterService"
-            android:foregroundServiceType="health"
-            android:exported="false"
-            android:enabled="true" />
-
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:launchMode="singleTask"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
-            android:windowSoftInputMode="adjustResize"
-            android:label="@string/app_name"
-            android:theme="@style/AppTheme">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
 </manifest>
