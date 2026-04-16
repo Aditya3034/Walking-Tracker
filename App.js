@@ -3,20 +3,19 @@ import { StatusBar, StyleSheet, View, TouchableOpacity, Text, Animated } from 'r
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import WalkingTrackerScreen from './src/StepCounter';
 import ActivitiesScreen from './src/ActivitiesScreen';
+import HomeScreen from './src/HomeScreen';
 import BleStepService from './src/BleStepService';
 import SplashScreen from './src/SplashScreen';
-import MapTestScreen from './src/MapTestScreen';
-
 const TABS = [
+  { id: 'home',       label: 'Home'  },
   { id: 'tracker',    label: 'Track' },
   { id: 'activities', label: 'Log'   },
-  { id: 'map',        label: 'Map (TEST)'   },
 ];
 
 
 export default function App() {
   const [splashDone, setSplashDone] = useState(false);
-  const [activeTab, setActiveTab] = useState('tracker');
+  const [activeTab, setActiveTab] = useState('home');
   const [hungerState, setHungerState] = useState('normal');
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const overlayColor = useRef(new Animated.Value(0)).current; // 0=amber, 1=red
@@ -103,9 +102,9 @@ export default function App() {
               key={tab.id}
               style={{ flex: 1, display: activeTab === tab.id ? 'flex' : 'none' }}
             >
+              {tab.id === 'home'       && <HomeScreen isActive={activeTab === 'home'} />}
               {tab.id === 'tracker'    && <WalkingTrackerScreen />}
               {tab.id === 'activities' && <ActivitiesScreen isActive={activeTab === 'activities'} />}
-              {tab.id === 'map'        && <MapTestScreen isActive={activeTab === 'map'} />}
             </View>
           ))}
 

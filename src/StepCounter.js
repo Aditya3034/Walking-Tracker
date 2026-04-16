@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View,
@@ -10,9 +10,8 @@ import {
   NativeEventEmitter,
   ScrollView,
   AppState,
-  Modal,
-  Dimensions,
   Linking,
+  DeviceEventEmitter,
 } from 'react-native';
 import {
   request,
@@ -21,11 +20,11 @@ import {
   RESULTS,
 } from 'react-native-permissions';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-import Svg, { Path, Polyline, Rect, Circle } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
+import { WebView } from 'react-native-webview';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
-import PetConnectCard from './PetConnectCard';
+import { buildMapboxHTML } from './mapboxHtml';
 
 const { StepCounter } = NativeModules;
 if (!StepCounter) {
@@ -64,50 +63,6 @@ function formatDistance(metres) {
   return `${(metres / 1000).toFixed(2)} km`;
 }
 
-/* -------------------- ROUTE HELPERS -------------------- */
-
-function projectRouteRaw(points, scale = 100000) {
-  if (!points.length) return [];
-  const base = points[0];
-  return points.map(p => ({
-    x: (p.longitude - base.longitude) * scale,
-    y: (base.latitude - p.latitude) * scale,
-  }));
-}
-
-function followCurrentPoint(points, width, height) {
-  if (!points.length) return [];
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const current = points[points.length - 1];
-  return points.map(p => ({
-    x: p.x - current.x + centerX,
-    y: p.y - current.y + centerY,
-  }));
-}
-
-function normalizeRouteToCard(points, width, height, padding = 24) {
-  if (!points.length) return [];
-  const xs = points.map(p => p.x);
-  const ys = points.map(p => p.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const routeWidth = maxX - minX || 1;
-  const routeHeight = maxY - minY || 1;
-  const scale = Math.min(
-    (width - padding * 2) / routeWidth,
-    (height - padding * 2) / routeHeight
-  );
-  const offsetX = (width - routeWidth * scale) / 2;
-  const offsetY = (height - routeHeight * scale) / 2;
-  return points.map(p => ({
-    x: offsetX + (p.x - minX) * scale,
-    y: offsetY + (p.y - minY) * scale,
-  }));
-}
-
 /* -------------------- UI COMPONENTS -------------------- */
 
 function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
@@ -138,141 +93,17 @@ function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
   );
 }
 
-function RouteOutline({ routeSegments, isTracking, color = '#EE5514', width = 340, height = 260 }) {
-  const allPoints = routeSegments.flat();
-  if (allPoints.length < 1) return null;
-
-  // Project all points together so segments share a coordinate system
-  const world = projectRouteRaw(allPoints);
-
-  const transformed = isTracking
-    ? followCurrentPoint(world, width, height)
-    : normalizeRouteToCard(world, width, height, 50);
-
-  // Split transformed array back into per-segment slices
-  const segmentViews = [];
-  let offset = 0;
-  for (let i = 0; i < routeSegments.length; i++) {
-    segmentViews.push(transformed.slice(offset, offset + routeSegments[i].length));
-    offset += routeSegments[i].length;
-  }
-
-  const firstPoint = transformed[0];
-  const lastPoint = transformed[transformed.length - 1];
-
-  return (
-    <View style={{ alignItems: 'center', marginTop: 20 }}>
-      <Svg width={width} height={height}>
-        <Rect x="0" y="0" width={width} height={height} rx="16" fill="#ffffff" />
-
-        {segmentViews.map((seg, i) => {
-          if (seg.length < 2) return null;
-          const poly = seg.map(p => `${p.x},${p.y}`).join(' ');
-          return (
-            <Polyline
-              key={i}
-              points={poly}
-              fill="none"
-              stroke={color}
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          );
-        })}
-
-        {firstPoint && (
-          <Circle cx={firstPoint.x} cy={firstPoint.y} r="3" fill="#034dd8" />
-        )}
-        {allPoints.length > 1 && lastPoint && (
-          <Circle cx={lastPoint.x} cy={lastPoint.y} r="6" fill="#0098e9" />
-        )}
-      </Svg>
-    </View>
-  );
-}
-
-/* -------------------- SESSION SUMMARY MODAL -------------------- */
-
-function SessionSummaryModal({ visible, steps, routeSegments, treatsEarned, routeColor = '#EE5514', onClose }) {
-  const treats = treatsEarned || 0;
-  const hasRoute = Array.isArray(routeSegments) && routeSegments.flat().length >= 1;
-  const routeW = SCREEN_WIDTH - 80;
-  const routeH = 200;
-  const distanceMetres = Array.isArray(routeSegments) ? calcSegmentsDistance(routeSegments) : 0;
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={summaryStyles.overlay}>
-        <View style={summaryStyles.sheet}>
-
-          <Text style={summaryStyles.title}>Session Complete</Text>
-
-          {hasRoute && (
-            <View style={summaryStyles.routeWrapper}>
-              <RouteOutline
-                routeSegments={routeSegments}
-                isTracking={false}
-                color={routeColor}
-                width={routeW}
-                height={routeH}
-              />
-            </View>
-          )}
-
-          <View style={summaryStyles.statsRow}>
-            <View style={summaryStyles.statBox}>
-              <Text style={summaryStyles.statValue}>{steps}</Text>
-              <Text style={summaryStyles.statLabel}>Steps</Text>
-            </View>
-            {distanceMetres > 0 && (
-              <View style={summaryStyles.statBox}>
-                <Text style={summaryStyles.statValue}>{formatDistance(distanceMetres)}</Text>
-                <Text style={summaryStyles.statLabel}>Distance</Text>
-              </View>
-            )}
-            {treats > 0 && (
-              <View style={summaryStyles.statBox}>
-                <Text style={summaryStyles.statValue}>{treats}</Text>
-                <Text style={summaryStyles.statLabel}>Treats</Text>
-              </View>
-            )}
-          </View>
-
-          {treats > 0 && (
-            <View style={summaryStyles.treatsRow}>
-              {Array.from({ length: Math.min(treats, 12) }).map((_, i) => (
-                <View key={i} style={summaryStyles.treatDot} />
-              ))}
-              {treats > 12 && (
-                <Text style={summaryStyles.treatsOverflow}>+{treats - 12}</Text>
-              )}
-            </View>
-          )}
-
-          <TouchableOpacity style={summaryStyles.doneButton} onPress={onClose}>
-            <Text style={summaryStyles.doneButtonText}>Done</Text>
-          </TouchableOpacity>
-
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 /* -------------------- MAIN SCREEN -------------------- */
 
-// trackingState: 'idle' | 'tracking' | 'paused'
+// trackingState: 'idle' | 'tracking' | 'paused' | 'finished'
 export default function WalkingTrackerScreen() {
   const [steps, setSteps] = useState(0);
   const [pendingTreats, setPendingTreats] = useState(0);
   const [trackingState, setTrackingState] = useState('idle');
-  const [bleStatus, setBleStatus] = useState('No device');
   const [routeSegments, setRouteSegments] = useState([]);
-  const [summaryVisible, setSummaryVisible] = useState(false);
-  const [summaryData, setSummaryData] = useState(null);
   const [gpsWaiting, setGpsWaiting] = useState(false);
   const [petColor, setPetColor] = useState('#EE5514');
+  const [scrollEnabled, setScrollEnabled] = useState(true);
 
   const watchIdRef = useRef(null);
   const sessionOffsetRef = useRef(null);
@@ -282,6 +113,14 @@ export default function WalkingTrackerScreen() {
   const lastGpsPosRef = useRef(null);
   const sessionTreatsRef = useRef(0); // treats earned in current session (prevents double-counting)
 
+  const webRef = useRef(null);
+  const [initialPos, setInitialPos] = useState({ lat: 19.076, lon: 72.877 });
+  const [mapReady, setMapReady] = useState(false);
+  // Memoised so petColor/initialPos updates never reload the WebView — color applied via setColor message
+  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [gpsAvailable, setGpsAvailable] = useState(null); // null=unknown, true=ok, false=unavailable
+  const sendMsg = (obj) => webRef.current?.postMessage(JSON.stringify(obj));
+
   /* -------- load persisted treats + petColor on mount -------- */
   useEffect(() => {
     AsyncStorage.getItem('pendingTreats').then(val => {
@@ -290,7 +129,54 @@ export default function WalkingTrackerScreen() {
     AsyncStorage.getItem('petColor').then(val => {
       if (val && val !== '#f1f5f9' && val !== '#ffffff') setPetColor(val);
     }).catch(() => {});
+
+    const sub = DeviceEventEmitter.addListener('petColorChange', color => setPetColor(color));
+    return () => sub.remove();
   }, []);
+
+  /* -------- get initial position for map center -------- */
+  useEffect(() => {
+    Geolocation.getCurrentPosition(
+      pos => {
+        setInitialPos({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        setGpsAvailable(true);
+      },
+      () => setGpsAvailable(false),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }, []);
+
+  /* -------- set color + handle background-restored session on map load -------- */
+  useEffect(() => {
+    if (!mapReady) return;
+    sendMsg({ type: 'setColor', color: petColor });
+    if (trackingState === 'tracking') {
+      // App was killed mid-session and restored — start a fresh segment on the map
+      sendMsg({ type: 'start' });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady]);
+
+  /* -------- update map color when pet color changes -------- */
+  useEffect(() => {
+    if (mapReady) sendMsg({ type: 'setColor', color: petColor });
+  }, [petColor, mapReady]);
+
+  /* -------- idle GPS watch — keeps dot moving before/between sessions -------- */
+  useEffect(() => {
+    if (!mapReady || trackingState !== 'idle') return;
+
+    const id = Geolocation.watchPosition(
+      pos => {
+        setGpsAvailable(true);
+        sendMsg({ type: 'position', lat: pos.coords.latitude, lon: pos.coords.longitude });
+      },
+      () => setGpsAvailable(false),
+      { enableHighAccuracy: true, distanceFilter: 0, interval: 2000 }
+    );
+
+    return () => Geolocation.clearWatch(id);
+  }, [mapReady, trackingState]);
 
   /* -------- step counter event listener -------- */
   useEffect(() => {
@@ -322,30 +208,6 @@ export default function WalkingTrackerScreen() {
     return () => sub.remove();
   }, []);
 
-  /* -------- BLE status — driven by native events, no polling -------- */
-  useEffect(() => {
-    // Set initial state
-    const s = BleStepService.getTrackingStatus();
-    setBleStatus(s.hasDevice ? `Connected: ${s.deviceName}` : 'No device connected');
-
-    const unsubDisconnect = BleStepService.onDisconnect(() => {
-      setBleStatus('No device connected');
-    });
-
-    // Listen for connect events via native emitter
-    const connSub = eventEmitter?.addListener('BleConnectionUpdate', (state) => {
-      if (state === 'connected') {
-        setBleStatus(`Connected: ${BleStepService.deviceName || 'Pet Locket'}`);
-      } else {
-        setBleStatus('No device connected');
-      }
-    });
-
-    return () => {
-      unsubDisconnect();
-      connSub?.remove();
-    };
-  }, []);
 
   /* -------- restore state if background service is still running after app kill -------- */
   useEffect(() => {
@@ -428,6 +290,7 @@ export default function WalkingTrackerScreen() {
         }
         lastGpsPosRef.current = { latitude, longitude };
         setGpsWaiting(false);
+        sendMsg({ type: 'position', lat: latitude, lon: longitude });
 
         setRouteSegments(prev => {
           if (!prev.length) return prev;
@@ -510,6 +373,7 @@ export default function WalkingTrackerScreen() {
     setRouteSegments([[]]); // fresh first segment
     sessionOffsetRef.current = null;
     setGpsWaiting(true);
+    sendMsg({ type: 'start' });
     watchIdRef.current = startGpsWatch();
 
     if (!isSensorStartedRef.current) {
@@ -529,12 +393,14 @@ export default function WalkingTrackerScreen() {
       Geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
+    sendMsg({ type: 'pause' });
     setTrackingState('paused');
   };
 
   const resumeTracking = () => {
     // Start a new segment — new points won't be connected to the pre-pause segment
     setRouteSegments(prev => [...prev, []]);
+    sendMsg({ type: 'resume' });
     setGpsWaiting(true);
     watchIdRef.current = startGpsWatch();
     setTrackingState('tracking');
@@ -567,14 +433,12 @@ export default function WalkingTrackerScreen() {
     }
     await AsyncStorage.removeItem('sessionInProgress');
 
-    // Show summary before wiping state
-    setSummaryData({ steps, routeSegments, treatsEarned: sessionTreatsRef.current });
-    setSummaryVisible(true);
+    sendMsg({ type: 'finish' }); // map fitBounds to show full route
+    setTrackingState('finished');
   };
 
-  const handleSummaryClose = () => {
-    setSummaryVisible(false);
-    setSummaryData(null);
+  const handleDone = () => {
+    sendMsg({ type: 'clear' });
     savedStepsRef.current = 0;
     sessionOffsetRef.current = null;
     sessionTreatsRef.current = 0;
@@ -586,34 +450,13 @@ export default function WalkingTrackerScreen() {
 
   /* -------- derived -------- */
   const ringProgress = steps % MAX_STEPS;
-  const hasDevice = bleStatus.includes('Connected');
+  const isFinished = trackingState === 'finished';
   const isActive = trackingState !== 'idle';
-
-  const feedPet = async () => {
-    if (pendingTreats <= 0 || !hasDevice) return;
-    try {
-      await BleStepService.writeToDevice('FEED');
-      BleStepService.recordFeed();
-      setPendingTreats(prev => {
-        const updated = Math.max(0, prev - 1);
-        AsyncStorage.setItem('pendingTreats', String(updated)).catch(() => {});
-        return updated;
-      });
-    } catch (e) {
-      console.warn('Feed failed', e);
-    }
-  };
-
-  /* -------- derived -------- */
-  const allRoutePoints = Array.isArray(routeSegments) ? routeSegments.flat() : [];
 
   /* -------- render -------- */
   return (
     <>
-    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-
-      {/* Pet connect card */}
-      <PetConnectCard />
+    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} scrollEnabled={scrollEnabled}>
 
       {/* Steps ring */}
       <View style={styles.stepsCard}>
@@ -625,12 +468,25 @@ export default function WalkingTrackerScreen() {
       </View>
 
       {/* Status badge */}
-      {isActive && (
+      {isActive && !isFinished && (
         <View style={[styles.statusBadge, trackingState === 'paused' && styles.statusBadgePaused]}>
           <View style={[styles.statusDot, trackingState === 'paused' && styles.statusDotPaused]} />
           <Text style={[styles.statusBadgeText, trackingState === 'paused' && styles.statusBadgeTextPaused]}>
             {trackingState === 'tracking' ? 'TRACKING' : 'PAUSED'}
           </Text>
+        </View>
+      )}
+
+      {/* Finished — distance + done */}
+      {isFinished && (
+        <View style={styles.finishedRow}>
+          <View>
+            <Text style={styles.finishedDist}>{formatDistance(calcSegmentsDistance(routeSegments))}</Text>
+            <Text style={styles.finishedDistLabel}>Distance</Text>
+          </View>
+          <TouchableOpacity onPress={handleDone} activeOpacity={0.7}>
+            <Text style={styles.doneText}>Done</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -689,54 +545,51 @@ export default function WalkingTrackerScreen() {
         </View>
       )}
 
-      {/* Route outline */}
-      {allRoutePoints.length >= 1 && (
-        <RouteOutline
-          routeSegments={routeSegments}
-          isTracking={trackingState === 'tracking'}
-          color={petColor}
+      {/* Live map — always visible */}
+      <View
+        style={styles.mapCard}
+        onTouchStart={() => setScrollEnabled(false)}
+        onTouchEnd={() => setScrollEnabled(true)}
+        onTouchCancel={() => setScrollEnabled(true)}
+      >
+        <WebView
+          ref={webRef}
+          originWhitelist={['*']}
+          source={{ html: mapHtml }}
+          style={{ flex: 1 }}
+          javaScriptEnabled
+          domStorageEnabled
+          cacheEnabled
+          mixedContentMode="always"
+          onLoadEnd={() => setMapReady(true)}
+          scrollEnabled={false}
+          overScrollMode="never"
+          showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator={false}
         />
-      )}
+        {/* GPS unavailable overlay — shown when idle and location is off */}
+        {!isActive && gpsAvailable === false && (
+          <View style={styles.mapGpsOverlay}>
+            <Text style={styles.mapGpsOverlayText}>Turn on location for accurate tracking</Text>
+            <TouchableOpacity
+              style={styles.mapGpsOverlayBtn}
+              onPress={() => {
+                if (Platform.OS === 'android') {
+                  Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => Linking.openSettings());
+                } else {
+                  Linking.openURL('App-Prefs:Privacy&path=LOCATION').catch(() => Linking.openSettings());
+                }
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.mapGpsOverlayBtnText}>Open Settings</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
 
-      {/* Treats */}
-      {pendingTreats > 0 && (
-        <View style={styles.treatsCard}>
-          <View style={styles.treatsHeader}>
-            <Text style={styles.treatsTitle}>Treats Earned</Text>
-            <View style={styles.treatsBadge}>
-              <Text style={styles.treatsBadgeText}>{pendingTreats}</Text>
-            </View>
-          </View>
-          <View style={styles.treatDotsRow}>
-            {Array.from({ length: Math.min(pendingTreats, 12) }).map((_, i) => (
-              <View key={i} style={styles.treatDot} />
-            ))}
-            {pendingTreats > 12 && (
-              <Text style={styles.treatMore}>+{pendingTreats - 12}</Text>
-            )}
-          </View>
-          <TouchableOpacity
-            style={[styles.feedButton, (!hasDevice || pendingTreats <= 0) && { opacity: 0.4 }]}
-            onPress={feedPet}
-            disabled={!hasDevice || pendingTreats <= 0}
-          >
-            <Text style={styles.feedButtonText}>Feed Pet</Text>
-          </TouchableOpacity>
-        </View>
-      )}
 
     </ScrollView>
-
-    {summaryData && (
-      <SessionSummaryModal
-        visible={summaryVisible}
-        steps={summaryData.steps}
-        routeSegments={summaryData.routeSegments}
-        treatsEarned={summaryData.treatsEarned}
-        routeColor={petColor}
-        onClose={handleSummaryClose}
-      />
-    )}
     </>
   );
 }
@@ -880,88 +733,50 @@ const styles = StyleSheet.create({
   },
   gpsBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 
-  /* Treats */
-  treatsCard: {
-    ...card,
-    marginTop: 16,
-    padding: 20,
-    alignItems: 'center',
+  /* Live map card */
+  mapCard: {
+    height: 260,
+    marginTop: 20,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  treatsHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
-  treatsTitle: { fontSize: 14, fontWeight: '700', color: C.text, textTransform: 'uppercase' },
-  treatsBadge: {
-    backgroundColor: C.warning,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-  },
-  treatsBadgeText: { fontSize: 13, fontWeight: '800', color: '#fff' },
-  treatDotsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6, marginBottom: 16 },
-  treatDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.warning },
-  treatMore: { fontSize: 12, color: C.text3, alignSelf: 'center', marginLeft: 4 },
-  treatsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },
-  feedButton: {
-    backgroundColor: C.primary,
-    paddingHorizontal: 28,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  feedButtonText: { color: '#fff', fontWeight: '700', fontSize: 13},
-});
 
-const summaryStyles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: C.card,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 28,
-    paddingHorizontal: 24,
-    paddingBottom: 44,
+  mapGpsOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.88)',
     alignItems: 'center',
-  },
-  title: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: C.text,
-    textTransform: 'uppercase',
-    marginBottom: 20,
-  },
-  routeWrapper: {
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 40,
-    marginBottom: 20,
-  },
-  statBox: { alignItems: 'center' },
-  statValue: { fontSize: 42, fontWeight: '900', color: C.text},
-  statLabel: { fontSize: 11, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 4 },
-  treatsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     justifyContent: 'center',
-    gap: 6,
-    marginBottom: 24,
+    gap: 12,
   },
-  treatDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: C.warning },
-  treatsOverflow: { fontSize: 13, color: C.text3, alignSelf: 'center', marginLeft: 4 },
-  doneButton: {
-    backgroundColor: C.primary,
-    paddingVertical: 16,
-    paddingHorizontal: 56,
-    borderRadius: 14,
+  mapGpsOverlayText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0f172a',
+    textAlign: 'center',
+    paddingHorizontal: 24,
   },
-  doneButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '800',
+  mapGpsOverlayBtn: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
   },
+  mapGpsOverlayBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+
+  /* Finished state — distance + done */
+  finishedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
+  finishedDist: { fontSize: 32, fontWeight: '900', color: C.text },
+  finishedDistLabel: { fontSize: 11, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
+  doneText: { fontSize: 15, fontWeight: '700', color: C.accent },
 });

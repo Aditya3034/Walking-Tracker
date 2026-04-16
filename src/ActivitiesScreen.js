@@ -7,6 +7,7 @@ import {
   ScrollView,
   Modal,
   TouchableOpacity,
+  DeviceEventEmitter,
 } from 'react-native';
 import Svg, { Polyline, Rect, Circle, Path } from 'react-native-svg';
 
@@ -227,6 +228,9 @@ export default function ActivitiesScreen({ isActive = false }) {
     AsyncStorage.getItem('petColor').then(val => {
       if (val && val !== '#f1f5f9' && val !== '#ffffff') setPetColor(val);
     }).catch(() => {});
+
+    const sub = DeviceEventEmitter.addListener('petColorChange', color => setPetColor(color));
+    return () => sub.remove();
   }, []);
 
   const isCurrentMonth = viewYear === now.getFullYear() && viewMonth === now.getMonth();

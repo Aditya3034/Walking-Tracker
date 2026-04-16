@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
   Platform, Alert, Linking, NativeModules, NativeEventEmitter, ToastAndroid,
-  TextInput, Modal, Animated, Image,
+  TextInput, Modal, Animated, Image, DeviceEventEmitter,
 } from 'react-native';
 
 import { requestMultiple, PERMISSIONS, RESULTS } from 'react-native-permissions';
@@ -151,6 +151,7 @@ export default function PetConnectCard() {
     const AsyncStorage = require('@react-native-async-storage/async-storage').default;
     AsyncStorage.getItem('petName').then(val => { if (val) setPetName(val); }).catch(() => {});
     AsyncStorage.getItem('petColor').then(val => { if (val) setPetColor(val); }).catch(() => {});
+
   }, []);
 
   useEffect(() => {
@@ -510,6 +511,7 @@ export default function PetConnectCard() {
                   }
                   const AsyncStorage = require('@react-native-async-storage/async-storage').default;
                   await AsyncStorage.setItem('petColor', petColor).catch(() => {});
+                  DeviceEventEmitter.emit('petColorChange', petColor);
                   setEditModalVisible(false);
                 }}
               >

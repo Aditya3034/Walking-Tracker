@@ -19,7 +19,7 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor) {
     '  style: "mapbox://styles/mapbox/light-v11",' +
     '  center: [' + lon + ', ' + lat + '],' +
     '  zoom: 17,' +
-    '  interactive: false,' +
+    '  interactive: true,' +
     '  attributionControl: false' +
     '});' +
     'var coords = [], allCoords = [], isTracking = false, mapReady = false, pendingColor = null;' +
@@ -60,6 +60,7 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor) {
     '      }' +
     '    } else if (msg.type === "clear") {' +
     '      coords = []; allCoords = []; isTracking = false; updateRoute();' +
+    '      map.flyTo({ center: dotCoords, zoom: 17 });' +
     '    } else if (msg.type === "resize") {' +
     '      map.resize();' +
     '    } else if (msg.type === "setColor") {' +
