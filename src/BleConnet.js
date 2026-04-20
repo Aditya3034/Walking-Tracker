@@ -315,7 +315,7 @@ export default function BleConnect() {
       let permissions = [];
       if (Platform.OS === 'android') {
         permissions = Platform.Version >= 31
-          ? [PERMISSIONS.ANDROID.BLUETOOTH_SCAN, PERMISSIONS.ANDROID.BLUETOOTH_CONNECT, PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION]
+          ? [PERMISSIONS.ANDROID.BLUETOOTH_SCAN, PERMISSIONS.ANDROID.BLUETOOTH_CONNECT]
           : Platform.Version >= 29
             ? [PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION]
             : [PERMISSIONS.ANDROID.ACCESS_COARSE_LOCATION];

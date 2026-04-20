@@ -137,6 +137,15 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatDuration(secs) {
+  if (!secs) return null;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 /* ---------------- DAY CELL ---------------- */
 function DayCell({ day, active, faded, segments, traceColor = '#EE5514', onPress }) {
   const segs = normalizeSegmentsSquare(segments, CELL_W, CELL_H, 9, 18);
@@ -208,6 +217,7 @@ function SessionCard({ session, index }) {
           </View>
           <Text style={ss.steps}>{session.steps.toLocaleString()} steps</Text>
           {dist > 0 && <Text style={ss.dist}>{formatDistance(dist)}</Text>}
+          {session.duration > 0 && <Text style={ss.dist}>{formatDuration(session.duration)}</Text>}
         </View>
         {session.timestamp ? <Text style={ss.time}>{formatTime(session.timestamp)}</Text> : null}
       </View>
@@ -293,6 +303,7 @@ export default function ActivitiesScreen({ isActive = false }) {
     : [];
   const totalSteps    = selectedSessions.reduce((s, x) => s + (x.steps || 0), 0);
   const totalDistance = selectedSessions.reduce((s, x) => s + calcSessionDistance(x), 0);
+  const totalDuration = selectedSessions.reduce((s, x) => s + (x.duration || 0), 0);
 
   return (
     <>
@@ -378,6 +389,7 @@ export default function ActivitiesScreen({ isActive = false }) {
                   <Text style={styles.sheetSub}>
                     {totalSteps.toLocaleString()} steps
                     {totalDistance > 0 ? ` · ${formatDistance(totalDistance)}` : ''}
+                    {totalDuration > 0 ? ` · ${formatDuration(totalDuration)}` : ''}
                     {` · ${selectedSessions.length} session${selectedSessions.length !== 1 ? 's' : ''}`}
                   </Text>
                 )}

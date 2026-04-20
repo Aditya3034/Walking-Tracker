@@ -39,7 +39,7 @@ const int eyeBaseWidth = 30,  eyeBaseHeight = 44, eyeSpacing = 16;
 const int blinkDuration = 220, transitionDuration = 150;
 
 const unsigned long HUNGER_INTERVAL   = 7200000;  // 2 hours
-const unsigned long STARVING_INTERVAL = 3600000;  // 1 hour after hungry
+const unsigned long STARVING_INTERVAL = 1800000;  // .5 hour after hungry
 const unsigned long FEED_ANIM_DURATION = 3000;
 const unsigned long PERSIST_INTERVAL  = 5000;
 

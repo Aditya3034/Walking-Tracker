@@ -8,10 +8,11 @@ import {
   Platform,
   NativeModules,
   NativeEventEmitter,
-  ScrollView,
+  Dimensions,
   AppState,
   Linking,
   DeviceEventEmitter,
+  Animated,
 } from 'react-native';
 import {
   request,
@@ -19,12 +20,12 @@ import {
   PERMISSIONS,
   RESULTS,
 } from 'react-native-permissions';
-
-import Svg, { Path } from 'react-native-svg';
 import { WebView } from 'react-native-webview';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
 import { buildMapboxHTML } from './mapboxHtml';
+
+Geolocation.setRNConfiguration({ skipPermissionRequests: true });
 
 const { StepCounter } = NativeModules;
 if (!StepCounter) {
@@ -35,8 +36,8 @@ if (!StepCounter) {
 }
 const eventEmitter = new NativeEventEmitter(StepCounter || null);
 
-const MAX_STEPS = 100;
 const MAX_ROUTE_POINTS = 500;
+let lastKnownPos = null; // persists across tab-switch unmount/remount
 
 /* -------------------- DISTANCE HELPERS -------------------- */
 
@@ -58,39 +59,17 @@ function calcSegmentsDistance(segments) {
   return segments.reduce((sum, seg) => sum + haversineDistance(seg), 0);
 }
 
-function formatDistance(metres) {
+function displayDistance(metres) {
   if (metres < 1000) return `${Math.round(metres)} m`;
   return `${(metres / 1000).toFixed(2)} km`;
 }
 
-/* -------------------- UI COMPONENTS -------------------- */
-
-function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
-  const radius = (size - strokeWidth) / 2;
-  const center = size / 2;
-  const circumference = Math.PI * radius;
-  const ratio = Math.min(progress / MAX_STEPS, 1);
-  const dashOffset = circumference * (1 - ratio);
-
-  return (
-    <Svg width={size} height={size / 2 + strokeWidth}>
-      <Path
-        d={`M ${strokeWidth / 2}, ${center} A ${radius}, ${radius} 0 0 1 ${size - strokeWidth / 2}, ${center}`}
-        stroke="#e0e0e0"
-        strokeWidth={strokeWidth}
-        fill="none"
-      />
-      <Path
-        d={`M ${strokeWidth / 2}, ${center} A ${radius}, ${radius} 0 0 1 ${size - strokeWidth / 2}, ${center}`}
-        stroke="#27ae60"
-        strokeWidth={strokeWidth}
-        fill="none"
-        strokeDasharray={`${circumference} ${circumference}`}
-        strokeDashoffset={dashOffset}
-        strokeLinecap="round"
-      />
-    </Svg>
-  );
+function formatDuration(secs) {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 /* -------------------- MAIN SCREEN -------------------- */
@@ -98,12 +77,11 @@ function SemiCircleProgress({ size = 260, strokeWidth = 14, progress }) {
 // trackingState: 'idle' | 'tracking' | 'paused' | 'finished'
 export default function WalkingTrackerScreen() {
   const [steps, setSteps] = useState(0);
-  const [pendingTreats, setPendingTreats] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [trackingState, setTrackingState] = useState('idle');
   const [routeSegments, setRouteSegments] = useState([]);
   const [gpsWaiting, setGpsWaiting] = useState(false);
   const [petColor, setPetColor] = useState('#EE5514');
-  const [scrollEnabled, setScrollEnabled] = useState(true);
 
   const watchIdRef = useRef(null);
   const sessionOffsetRef = useRef(null);
@@ -111,21 +89,25 @@ export default function WalkingTrackerScreen() {
   const isSensorStartedRef = useRef(false);
   const isFinishingRef = useRef(false);
   const lastGpsPosRef = useRef(null);
-  const sessionTreatsRef = useRef(0); // treats earned in current session (prevents double-counting)
+  const sessionRestoredRef = useRef(false);  // true when syncOnMount found an interrupted session
+  const mapRouteRestoredRef = useRef(false); // true after we've sent restore to the WebView
+  const intervalRef = useRef(null);
+  const segmentStartRef = useRef(null);  // Date.now() when current tracking segment began
+  const accumulatedRef = useRef(0);      // seconds from all completed segments (before last pause)
 
   const webRef = useRef(null);
-  const [initialPos, setInitialPos] = useState({ lat: 19.076, lon: 72.877 });
+  const [initialPos, setInitialPos] = useState(lastKnownPos || { lat: 19.076, lon: 72.877 });
   const [mapReady, setMapReady] = useState(false);
   // Memoised so petColor/initialPos updates never reload the WebView — color applied via setColor message
-  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon, null, SCREEN_HEIGHT * 0.30), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [gpsAvailable, setGpsAvailable] = useState(null); // null=unknown, true=ok, false=unavailable
+  const [gpsPermissionResolved, setGpsPermissionResolved] = useState(false);
+  const radarAnims = useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
+  const [mapSectionHeight, setMapSectionHeight] = useState(0);
   const sendMsg = (obj) => webRef.current?.postMessage(JSON.stringify(obj));
 
-  /* -------- load persisted treats + petColor on mount -------- */
+  /* -------- load petColor on mount -------- */
   useEffect(() => {
-    AsyncStorage.getItem('pendingTreats').then(val => {
-      if (val !== null) setPendingTreats(parseInt(val, 10) || 0);
-    }).catch(() => {});
     AsyncStorage.getItem('petColor').then(val => {
       if (val && val !== '#f1f5f9' && val !== '#ffffff') setPetColor(val);
     }).catch(() => {});
@@ -134,49 +116,101 @@ export default function WalkingTrackerScreen() {
     return () => sub.remove();
   }, []);
 
-  /* -------- get initial position for map center -------- */
+  /* -------- get initial position once on mount -------- */
   useEffect(() => {
     Geolocation.getCurrentPosition(
       pos => {
-        setInitialPos({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        lastKnownPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        setInitialPos(lastKnownPos);
         setGpsAvailable(true);
+        setGpsPermissionResolved(true);
       },
-      () => setGpsAvailable(false),
-      { enableHighAccuracy: true, timeout: 8000 }
+      () => {
+        setGpsAvailable(false);
+        setGpsPermissionResolved(true);
+      },
+      { enableHighAccuracy: true, timeout: 8000, showLocationDialog: false }
     );
   }, []);
 
-  /* -------- set color + handle background-restored session on map load -------- */
+  /* -------- set color on map load -------- */
   useEffect(() => {
     if (!mapReady) return;
     sendMsg({ type: 'setColor', color: petColor });
-    if (trackingState === 'tracking') {
-      // App was killed mid-session and restored — start a fresh segment on the map
-      sendMsg({ type: 'start' });
-    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady]);
+
+  /* -------- replay historical route to map after app-kill restore -------- */
+  useEffect(() => {
+    if (!mapReady || !sessionRestoredRef.current || mapRouteRestoredRef.current) return;
+    if (trackingState === 'tracking' && routeSegments.some(s => s.length > 0)) {
+      mapRouteRestoredRef.current = true;
+      const segments = routeSegments.map(seg => seg.map(p => [p.longitude, p.latitude]));
+      sendMsg({ type: 'restore', segments });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, trackingState, routeSegments]);
 
   /* -------- update map color when pet color changes -------- */
   useEffect(() => {
     if (mapReady) sendMsg({ type: 'setColor', color: petColor });
   }, [petColor, mapReady]);
 
-  /* -------- idle GPS watch — keeps dot moving before/between sessions -------- */
+  /* -------- idle GPS watch — self-healing: restarts every 5s after an error -------- */
   useEffect(() => {
-    if (!mapReady || trackingState !== 'idle') return;
+    if (!mapReady || trackingState !== 'idle' || !gpsPermissionResolved) return;
 
-    const id = Geolocation.watchPosition(
-      pos => {
-        setGpsAvailable(true);
-        sendMsg({ type: 'position', lat: pos.coords.latitude, lon: pos.coords.longitude });
-      },
-      () => setGpsAvailable(false),
-      { enableHighAccuracy: true, distanceFilter: 0, interval: 2000 }
+    let watchId = null;
+    let retryTimer = null;
+    let active = true;
+
+    const startWatch = () => {
+      if (!active) return;
+      watchId = Geolocation.watchPosition(
+        pos => {
+          lastKnownPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          setGpsAvailable(true);
+          sendMsg({ type: 'position', lat: pos.coords.latitude, lon: pos.coords.longitude });
+        },
+        () => {
+          setGpsAvailable(false);
+          Geolocation.clearWatch(watchId);
+          watchId = null;
+          retryTimer = setTimeout(startWatch, 2000);
+        },
+        { enableHighAccuracy: true, distanceFilter: 0, interval: 2000, showLocationDialog: false }
+      );
+    };
+
+    startWatch();
+
+    return () => {
+      active = false;
+      if (watchId !== null) Geolocation.clearWatch(watchId);
+      if (retryTimer !== null) clearTimeout(retryTimer);
+    };
+  }, [mapReady, trackingState, gpsPermissionResolved]);
+
+  /* -------- radar animation — runs while GPS is unavailable -------- */
+  useEffect(() => {
+    if (gpsAvailable !== false) {
+      radarAnims.forEach(a => a.setValue(0));
+      return;
+    }
+    const DURATION = 2000;
+    const animations = radarAnims.map(anim =>
+      Animated.loop(Animated.timing(anim, { toValue: 1, duration: DURATION, useNativeDriver: true }))
     );
-
-    return () => Geolocation.clearWatch(id);
-  }, [mapReady, trackingState]);
+    animations[0].start();
+    const t1 = setTimeout(() => animations[1].start(), DURATION / 3);
+    const t2 = setTimeout(() => animations[2].start(), (DURATION / 3) * 2);
+    return () => {
+      animations.forEach(a => a.stop());
+      radarAnims.forEach(a => a.setValue(0));
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [gpsAvailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* -------- step counter event listener -------- */
   useEffect(() => {
@@ -191,23 +225,35 @@ export default function WalkingTrackerScreen() {
       if (sessionSteps >= 0) {
         const totalSteps = savedStepsRef.current + sessionSteps;
         setSteps(totalSteps);
-
-        // Earn a treat for every MAX_STEPS crossed — tracked against sessionTreatsRef to avoid double-counting
-        const totalTreatsEarned = Math.floor(totalSteps / MAX_STEPS);
-        if (totalTreatsEarned > sessionTreatsRef.current) {
-          const newlyEarned = totalTreatsEarned - sessionTreatsRef.current;
-          sessionTreatsRef.current = totalTreatsEarned;
-          setPendingTreats(prev => {
-            const updated = prev + newlyEarned;
-            AsyncStorage.setItem('pendingTreats', String(updated)).catch(() => {});
-            return updated;
-          });
-        }
       }
     });
     return () => sub.remove();
   }, []);
 
+
+  /* -------- session duration timer — wall-clock based so background time is included -------- */
+  useEffect(() => {
+    if (trackingState !== 'tracking') {
+      clearInterval(intervalRef.current);
+      return;
+    }
+    const tick = () => {
+      if (segmentStartRef.current) {
+        setDuration(accumulatedRef.current + Math.floor((Date.now() - segmentStartRef.current) / 1000));
+      }
+    };
+    tick(); // immediate update on state change
+    intervalRef.current = setInterval(tick, 1000);
+    return () => clearInterval(intervalRef.current);
+  }, [trackingState]);
+
+  /* -------- respond to HomeScreen requesting current step count -------- */
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('requestStepUpdate', () => {
+      DeviceEventEmitter.emit('stepUpdate', stepsRef.current);
+    });
+    return () => sub.remove();
+  }, []);
 
   /* -------- restore state if background service is still running after app kill -------- */
   useEffect(() => {
@@ -217,8 +263,8 @@ export default function WalkingTrackerScreen() {
         if (sessionActive !== 'true') return; // no interrupted session to restore
         const bgSteps = await StepCounter.getBackgroundSteps();
         if (bgSteps > 0) {
+          sessionRestoredRef.current = true;
           savedStepsRef.current = bgSteps;
-          sessionTreatsRef.current = Math.floor(bgSteps / MAX_STEPS); // don't re-earn treats from restored steps
           setSteps(bgSteps);
           setTrackingState('tracking');
 
@@ -232,6 +278,22 @@ export default function WalkingTrackerScreen() {
           } catch (e) {
             console.log('Route restore failed', e);
           }
+
+          // Restore duration from persisted timestamps
+          try {
+            const durData = await AsyncStorage.getItem('sessionDuration');
+            if (durData) {
+              const { start, accumulated } = JSON.parse(durData);
+              accumulatedRef.current = accumulated || 0;
+              // Always set a live segment start so the timer can continue
+              segmentStartRef.current = start || Date.now();
+              if (!start) {
+                // Was paused when killed — resume counting from now
+                await AsyncStorage.setItem('sessionDuration', JSON.stringify({ start: segmentStartRef.current, accumulated: accumulatedRef.current }));
+              }
+              setDuration(accumulatedRef.current + Math.floor((Date.now() - segmentStartRef.current) / 1000));
+            }
+          } catch (_) {}
 
           sessionOffsetRef.current = null;
           if (!isSensorStartedRef.current) {
@@ -248,6 +310,16 @@ export default function WalkingTrackerScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* -------- recalc duration when app foregrounds (catches background time) -------- */
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && segmentStartRef.current) {
+        setDuration(accumulatedRef.current + Math.floor((Date.now() - segmentStartRef.current) / 1000));
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   /* -------- sync steps when app foregrounds -------- */
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextState) => {
@@ -257,7 +329,6 @@ export default function WalkingTrackerScreen() {
           if (bgSteps > savedStepsRef.current) {
             savedStepsRef.current = bgSteps;
             sessionOffsetRef.current = null;
-            sessionTreatsRef.current = Math.floor(bgSteps / MAX_STEPS); // don't re-earn treats from synced steps
             setSteps(bgSteps);
             // Don't override 'paused' — user explicitly paused, background steps are still counted
             setTrackingState(prev => prev === 'idle' ? 'idle' : prev);
@@ -343,13 +414,14 @@ export default function WalkingTrackerScreen() {
   };
 
   /* -------- session persistence -------- */
-  const saveSession = async (finalSteps, finalRoute, finalSegments) => {
+  const saveSession = async (finalSteps, finalRoute, finalSegments, finalDuration) => {
     const _d = new Date();
     const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
     const session = {
       steps: finalSteps,
       route: finalRoute,           // flat — backward compat
       segments: finalSegments,     // array of arrays — used for gap rendering
+      duration: finalDuration,     // seconds
       timestamp: Date.now(),
     };
     try {
@@ -370,6 +442,12 @@ export default function WalkingTrackerScreen() {
     if (!granted) return;
 
     await AsyncStorage.setItem('sessionInProgress', 'true');
+    segmentStartRef.current = Date.now();
+    accumulatedRef.current = 0;
+    setDuration(0);
+    await AsyncStorage.setItem('sessionDuration', JSON.stringify({ start: segmentStartRef.current, accumulated: 0 }));
+    sessionRestoredRef.current = false;
+    mapRouteRestoredRef.current = false;
     setRouteSegments([[]]); // fresh first segment
     sessionOffsetRef.current = null;
     setGpsWaiting(true);
@@ -388,6 +466,11 @@ export default function WalkingTrackerScreen() {
   };
 
   const pauseTracking = () => {
+    if (segmentStartRef.current) {
+      accumulatedRef.current += Math.floor((Date.now() - segmentStartRef.current) / 1000);
+      segmentStartRef.current = null;
+      AsyncStorage.setItem('sessionDuration', JSON.stringify({ start: null, accumulated: accumulatedRef.current })).catch(() => {});
+    }
     // Stop GPS watch — route stops drawing here
     if (watchIdRef.current != null) {
       Geolocation.clearWatch(watchIdRef.current);
@@ -398,6 +481,8 @@ export default function WalkingTrackerScreen() {
   };
 
   const resumeTracking = () => {
+    segmentStartRef.current = Date.now();
+    AsyncStorage.setItem('sessionDuration', JSON.stringify({ start: segmentStartRef.current, accumulated: accumulatedRef.current })).catch(() => {});
     // Start a new segment — new points won't be connected to the pre-pause segment
     setRouteSegments(prev => [...prev, []]);
     sendMsg({ type: 'resume' });
@@ -411,10 +496,13 @@ export default function WalkingTrackerScreen() {
     isFinishingRef.current = true;
 
     const flatRoute = routeSegments.flat();
+    const finalDuration = accumulatedRef.current +
+      (segmentStartRef.current ? Math.floor((Date.now() - segmentStartRef.current) / 1000) : 0);
     // Don't litter the calendar with empty entries
     if (steps > 0 || flatRoute.length > 0) {
-      await saveSession(steps, flatRoute, routeSegments);
+      await saveSession(steps, flatRoute, routeSegments, finalDuration);
     }
+    await AsyncStorage.removeItem('sessionDuration');
 
     if (watchIdRef.current != null) {
       Geolocation.clearWatch(watchIdRef.current);
@@ -441,117 +529,35 @@ export default function WalkingTrackerScreen() {
     sendMsg({ type: 'clear' });
     savedStepsRef.current = 0;
     sessionOffsetRef.current = null;
-    sessionTreatsRef.current = 0;
     isFinishingRef.current = false;
+    sessionRestoredRef.current = false;
+    mapRouteRestoredRef.current = false;
+    segmentStartRef.current = null;
+    accumulatedRef.current = 0;
     setSteps(0);
+    setDuration(0);
+    DeviceEventEmitter.emit('sessionFinished');
     setRouteSegments([]);
     setTrackingState('idle');
   };
 
   /* -------- derived -------- */
-  const ringProgress = steps % MAX_STEPS;
   const isFinished = trackingState === 'finished';
   const isActive = trackingState !== 'idle';
+  const openLocationSettings = () => {
+    if (Platform.OS === 'android') {
+      Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => Linking.openSettings());
+    } else {
+      Linking.openURL('App-Prefs:Privacy&path=LOCATION').catch(() => Linking.openSettings());
+    }
+  };
 
   /* -------- render -------- */
   return (
-    <>
-    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} scrollEnabled={scrollEnabled}>
+    <View style={styles.container}>
 
-      {/* Steps ring */}
-      <View style={styles.stepsCard}>
-        <SemiCircleProgress progress={ringProgress} />
-        <View style={styles.centerSteps}>
-          <Text style={styles.stepsNumber}>{steps}</Text>
-          <Text style={styles.stepsLabel}>Steps</Text>
-        </View>
-      </View>
-
-      {/* Status badge */}
-      {isActive && !isFinished && (
-        <View style={[styles.statusBadge, trackingState === 'paused' && styles.statusBadgePaused]}>
-          <View style={[styles.statusDot, trackingState === 'paused' && styles.statusDotPaused]} />
-          <Text style={[styles.statusBadgeText, trackingState === 'paused' && styles.statusBadgeTextPaused]}>
-            {trackingState === 'tracking' ? 'TRACKING' : 'PAUSED'}
-          </Text>
-        </View>
-      )}
-
-      {/* Finished — distance + done */}
-      {isFinished && (
-        <View style={styles.finishedRow}>
-          <View>
-            <Text style={styles.finishedDist}>{formatDistance(calcSegmentsDistance(routeSegments))}</Text>
-            <Text style={styles.finishedDistLabel}>Distance</Text>
-          </View>
-          <TouchableOpacity onPress={handleDone} activeOpacity={0.7}>
-            <Text style={styles.doneText}>Done</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Controls */}
-      {trackingState === 'idle' && (
-        <TouchableOpacity style={styles.startButton} onPress={startTracking}>
-          <Text style={styles.startButtonIcon}>▶</Text>
-          <Text style={styles.startButtonText}>START</Text>
-        </TouchableOpacity>
-      )}
-
-      {trackingState === 'tracking' && (
-        <View style={styles.controlRow}>
-          <TouchableOpacity style={styles.pauseButton} onPress={pauseTracking}>
-            <Text style={styles.controlIcon}>⏸</Text>
-            <Text style={styles.controlText}>PAUSE</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.finishButton} onPress={finishTracking}>
-            <Text style={styles.controlIcon}>⏹</Text>
-            <Text style={styles.controlText}>FINISH</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {trackingState === 'paused' && (
-        <View style={styles.controlRow}>
-          <TouchableOpacity style={styles.resumeButton} onPress={resumeTracking}>
-            <Text style={styles.controlIcon}>▶</Text>
-            <Text style={styles.controlText}>RESUME</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.finishButton} onPress={finishTracking}>
-            <Text style={styles.controlIcon}>⏹</Text>
-            <Text style={styles.controlText}>FINISH</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* GPS waiting banner */}
-      {gpsWaiting && (
-        <View style={styles.gpsBanner}>
-          <Text style={styles.gpsBannerTitle}>Waiting for GPS…</Text>
-          <Text style={styles.gpsBannerSub}>Make sure location is turned on</Text>
-          <TouchableOpacity
-            style={styles.gpsBannerBtn}
-            onPress={() => {
-              if (Platform.OS === 'android') {
-                Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => Linking.openSettings());
-              } else {
-                Linking.openURL('App-Prefs:Privacy&path=LOCATION').catch(() => Linking.openSettings());
-              }
-            }}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.gpsBannerBtnText}>Open Location Settings</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Live map — always visible */}
-      <View
-        style={styles.mapCard}
-        onTouchStart={() => setScrollEnabled(false)}
-        onTouchEnd={() => setScrollEnabled(true)}
-        onTouchCancel={() => setScrollEnabled(true)}
-      >
+      {/* ── MAP — top half ── */}
+      <View style={styles.mapSection} onLayout={e => setMapSectionHeight(e.nativeEvent.layout.height)}>
         <WebView
           ref={webRef}
           originWhitelist={['*']}
@@ -567,216 +573,322 @@ export default function WalkingTrackerScreen() {
           showsHorizontalScrollIndicator={false}
           showsVerticalScrollIndicator={false}
         />
-        {/* GPS unavailable overlay — shown when idle and location is off */}
-        {!isActive && gpsAvailable === false && (
-          <View style={styles.mapGpsOverlay}>
-            <Text style={styles.mapGpsOverlayText}>Turn on location for accurate tracking</Text>
-            <TouchableOpacity
-              style={styles.mapGpsOverlayBtn}
-              onPress={() => {
-                if (Platform.OS === 'android') {
-                  Linking.sendIntent('android.settings.LOCATION_SOURCE_SETTINGS').catch(() => Linking.openSettings());
-                } else {
-                  Linking.openURL('App-Prefs:Privacy&path=LOCATION').catch(() => Linking.openSettings());
-                }
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.mapGpsOverlayBtnText}>Open Settings</Text>
+
+        {/* GPS banner — acquiring fix, pinned to top of screen */}
+        {gpsWaiting && (
+          <View style={styles.gpsCardTop}>
+            <Text style={styles.gpsCardText}>Acquiring GPS…</Text>
+            <Text style={styles.gpsCardSubText}>Make sure location is on</Text>
+            <TouchableOpacity style={styles.gpsCardBtn} onPress={openLocationSettings} activeOpacity={0.8}>
+              <Text style={styles.gpsCardBtnText}>Open Settings</Text>
             </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Radar overlay — shown when location is off */}
+        {gpsAvailable === false && mapSectionHeight > 0 && (
+          <View pointerEvents="none" style={styles.radarOverlay}>
+            <View style={[styles.radarCenter, {
+              top: (mapSectionHeight - SCREEN_HEIGHT * 0.30) / 2 - 9,
+            }]}>
+              {radarAnims.map((anim, i) => (
+                <Animated.View key={i} style={[styles.radarRing, {
+                  opacity: anim.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0.7, 0.45, 0] }),
+                  transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [1, 7] }) }],
+                }]} />
+              ))}
+              <View style={styles.radarDot} />
+            </View>
+          </View>
+        )}
+
+        {/* Location off banner — pinned to top of screen */}
+        {!isActive && gpsAvailable === false && (
+          <View style={styles.gpsCardTop}>
+            <Text style={styles.gpsCardText}>Turn on location for accurate tracking</Text>
+            <TouchableOpacity style={styles.gpsCardBtn} onPress={openLocationSettings} activeOpacity={0.8}>
+              <Text style={styles.gpsCardBtnText}>Open Settings</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Status badge — only once GPS is acquired */}
+        {isActive && !isFinished && !gpsWaiting && (
+          <View style={[styles.statusBadge, trackingState === 'paused' && styles.statusBadgePaused]}>
+            <View style={[styles.statusDot, trackingState === 'paused' && styles.statusDotPaused]} />
+            <Text style={[styles.statusText, trackingState === 'paused' && styles.statusTextPaused]}>
+              {trackingState === 'tracking' ? 'tracking' : 'paused'}
+            </Text>
           </View>
         )}
       </View>
 
+      {/* ── STATS — floating panel over map bottom ── */}
+      <View style={styles.statsSection}>
 
-    </ScrollView>
-    </>
+        {/* Gradient: transparent top → white bottom */}
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+          {Array.from({ length: 20 }, (_, i) => (
+            <View key={i} style={{ flex: 1, backgroundColor: `rgba(255,255,255,${(i / 19) * 0.97})` }} />
+          ))}
+        </View>
+
+        {/* Steps + meta grouped so they sit close together */}
+        <View style={styles.stepsGroup}>
+          <View style={styles.stepsBlock}>
+            <Text style={styles.stepsNumber}>{steps.toLocaleString()}</Text>
+            <Text style={styles.stepsLabel}>steps</Text>
+          </View>
+
+          {/* Distance + Duration row */}
+          <View style={styles.metaRow}>
+            <View style={styles.metaItem}>
+              <Text style={styles.metaValue}>{displayDistance(calcSegmentsDistance(routeSegments))}</Text>
+              <Text style={styles.metaLabel}>distance</Text>
+            </View>
+            <View style={styles.metaDivider} />
+            <View style={styles.metaItem}>
+              <Text style={styles.metaValue}>{formatDuration(duration)}</Text>
+              <Text style={styles.metaLabel}>duration</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Finished row */}
+        {isFinished && (
+          <View style={styles.finishedRow}>
+            <TouchableOpacity style={styles.doneBtn} onPress={handleDone} activeOpacity={0.8}>
+              <Text style={styles.doneBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Controls */}
+        {trackingState === 'idle' && (
+          <TouchableOpacity
+            style={[styles.startBtn, gpsAvailable === false && styles.startBtnDisabled]}
+            onPress={gpsAvailable === false ? undefined : startTracking}
+            activeOpacity={gpsAvailable === false ? 1 : 0.85}
+          >
+            <Text style={styles.startBtnIcon}>▶</Text>
+          </TouchableOpacity>
+        )}
+
+        {trackingState === 'tracking' && (
+          <View style={styles.controlRow}>
+            <TouchableOpacity style={styles.controlBtn} onPress={pauseTracking} activeOpacity={0.8}>
+              <Text style={styles.controlBtnIcon}>⏸</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.controlBtn} onPress={finishTracking} activeOpacity={0.8}>
+              <Text style={styles.controlBtnIcon}>⏹</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {trackingState === 'paused' && (
+          <View style={styles.controlRow}>
+            <TouchableOpacity style={styles.controlBtn} onPress={resumeTracking} activeOpacity={0.8}>
+              <Text style={styles.controlBtnIcon}>▶</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.controlBtn} onPress={finishTracking} activeOpacity={0.8}>
+              <Text style={styles.controlBtnIcon}>⏹</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+      </View>
+
+    </View>
   );
 }
 
 /* -------------------- STYLES -------------------- */
 
-const C = {
-  bg:        '#ffffff',
-  card:      '#ffffff',
-  primary:   '#0f172a',
-  accent:    '#2563eb',
-  success:   '#059669',
-  warning:   '#d97706',
-  danger:    '#dc2626',
-  text:      '#0f172a',
-  text2:     '#475569',
-  text3:     '#94a3b8',
-  border:    '#e2e8f0',
-};
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-const card = {
-  backgroundColor: C.card,
-  borderRadius: 20,
-  shadowColor: '#000',
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.06,
-  shadowRadius: 8,
-  elevation: 2,
+const C = {
+  bg:      '#f8fafc',
+  surface: '#ffffff',
+  border:  '#e2e8f0',
+  text:    '#0f172a',
+  text2:   '#475569',
+  text3:   '#94a3b8',
+  success: '#059669',
+  warning: '#d97706',
+  danger:  '#dc2626',
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: C.bg },
-  contentContainer: { padding: 20, paddingBottom: 40 },
+  container: { flex: 1 },
 
-  /* Steps card */
-  stepsCard: {
-    ...card,
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 12,
+  /* Map — full screen background */
+  mapSection: {
+    ...StyleSheet.absoluteFillObject,
   },
-  centerSteps: { position: 'absolute', top: '38%', alignItems: 'center' },
-  stepsNumber: { fontSize: 52, fontWeight: '900', color: C.text },
-  stepsLabel: { fontSize: 12, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
-
-  /* Status badge */
   statusBadge: {
+    position: 'absolute',
+    top: 16,
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'center',
-    backgroundColor: '#dcfce7',
+    backgroundColor: 'rgba(255,255,255,0.90)',
+    borderWidth: 1,
+    borderColor: 'rgba(5,150,105,0.35)',
     borderRadius: 20,
     paddingHorizontal: 14,
     paddingVertical: 6,
-    marginBottom: 14,
     gap: 7,
   },
-  statusBadgePaused: { backgroundColor: '#fef3c7' },
+  statusBadgePaused: {
+    borderColor: 'rgba(217,119,6,0.35)',
+  },
   statusDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
   statusDotPaused: { backgroundColor: C.warning },
-  statusBadgeText: { fontSize: 11, fontWeight: '700', color: C.success, textTransform: 'uppercase' },
-  statusBadgeTextPaused: { color: C.warning },
+  statusText: { fontSize: 11, fontWeight: '700', color: C.success, letterSpacing: 0.5 },
+  statusTextPaused: { color: C.warning },
 
-  /* Start button */
-  startButton: {
-    backgroundColor: C.success,
-    paddingVertical: 18,
-    borderRadius: 16,
+  radarOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+  },
+  radarCenter: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 6,
-    shadowColor: C.success,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.28,
-    shadowRadius: 8,
-    elevation: 4,
   },
-  startButtonIcon: { fontSize: 16, color: '#fff' },
-  startButtonText: { color: '#fff', fontSize: 15, fontWeight: '800', textTransform: 'uppercase' },
+  radarRing: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: '#2563eb',
+  },
+  radarDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#2563eb',
+  },
 
-  /* Pause / Resume / Finish row */
-  controlRow: { flexDirection: 'row', gap: 10, marginBottom: 6 },
-  pauseButton: {
-    flex: 1,
-    backgroundColor: C.warning,
-    paddingVertical: 16,
+  /* GPS banner — acquiring fix, pinned to top of screen */
+  gpsCardTop: {
+    position: 'absolute',
+    top: 8,
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(255,255,255,0.95)',
     borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: C.warning,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.22,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  resumeButton: {
-    flex: 1,
-    backgroundColor: C.success,
-    paddingVertical: 16,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: C.success,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.22,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  finishButton: {
-    flex: 1,
-    backgroundColor: C.danger,
-    paddingVertical: 16,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: C.danger,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.22,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  controlIcon: { fontSize: 14, color: '#fff' },
-  controlText: { color: '#fff', fontSize: 13, fontWeight: '700', textTransform: 'uppercase' },
-
-  /* GPS waiting banner */
-  gpsBanner: {
-    ...card,
-    marginTop: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    alignItems: 'center',
-    gap: 4,
-  },
-  gpsBannerTitle: { fontSize: 13, fontWeight: '700', color: C.text },
-  gpsBannerSub: { fontSize: 11, color: C.text3, marginBottom: 8 },
-  gpsBannerBtn: {
-    backgroundColor: C.primary,
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  gpsBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-
-  /* Live map card */
-  mapCard: {
-    height: 260,
-    marginTop: 20,
-    borderRadius: 16,
-    overflow: 'hidden',
+    gap: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
+    shadowOpacity: 0.08,
     shadowRadius: 8,
+    elevation: 4,
+    zIndex: 10,
+  },
+
+  /* GPS card — location off, in normal flow */
+  gpsCard: {
+    alignSelf: 'stretch',
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
     elevation: 2,
   },
+  gpsCardText: { fontSize: 13, fontWeight: '600', color: '#0f172a', textAlign: 'center' },
+  gpsCardSubText: { fontSize: 12, color: '#64748b', textAlign: 'center' },
+  gpsCardBtn: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 10,
+    marginTop: 2,
+  },
+  gpsCardBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 
-  mapGpsOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255,255,255,0.88)',
+  /* Stats — floating panel over bottom of map */
+  statsSection: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: SCREEN_HEIGHT * 0.50,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 28,
+    paddingBottom: 28,
+    gap: 16,
+  },
+  stepsGroup: { alignItems: 'center', width: '100%', gap: 10 },
+  stepsBlock: { alignItems: 'center' },
+  stepsNumber: { fontSize: 72, fontWeight: '700', color: C.text, letterSpacing: -2 },
+  stepsLabel: { fontSize: 12, fontWeight: '500', color: C.text3, marginTop: 2 },
+
+  /* Distance + Duration row */
+  metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%' },
+  metaItem: { flex: 1, alignItems: 'center' },
+  metaDivider: { width: 1, height: 32, backgroundColor: C.border },
+  metaValue: { fontSize: 22, fontWeight: '700', color: C.text },
+  metaLabel: { fontSize: 11, fontWeight: '500', color: C.text3, marginTop: 3 },
+
+  /* Finished */
+  finishedRow: { alignItems: 'center' },
+  doneBtn: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: '#0f172a',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
   },
-  mapGpsOverlayText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#0f172a',
-    textAlign: 'center',
-    paddingHorizontal: 24,
-  },
-  mapGpsOverlayBtn: {
-    backgroundColor: '#0f172a',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
-  },
-  mapGpsOverlayBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  doneBtnText: { color: '#fff', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
 
-  /* Finished state — distance + done */
-  finishedRow: {
-    flexDirection: 'row',
+  /* Start button — large black circle */
+  startBtn: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: '#0f172a',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-    paddingHorizontal: 4,
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 4,
   },
-  finishedDist: { fontSize: 32, fontWeight: '900', color: C.text },
-  finishedDistLabel: { fontSize: 11, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
-  doneText: { fontSize: 15, fontWeight: '700', color: C.accent },
+  startBtnIcon: { fontSize: 26, color: '#fff', marginLeft: 4 },
+  startBtnDisabled: { backgroundColor: '#94a3b8', shadowOpacity: 0 },
+
+  /* Pause / Resume / Finish — unified black circles */
+  controlRow: { flexDirection: 'row', gap: 24, justifyContent: 'center' },
+  controlBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#0f172a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  controlBtnIcon: { fontSize: 24, color: '#fff' },
 });

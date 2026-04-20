@@ -103,7 +103,7 @@ export default function App() {
               style={{ flex: 1, display: activeTab === tab.id ? 'flex' : 'none' }}
             >
               {tab.id === 'home'       && <HomeScreen isActive={activeTab === 'home'} />}
-              {tab.id === 'tracker'    && <WalkingTrackerScreen />}
+              {tab.id === 'tracker' && activeTab === 'tracker' && <WalkingTrackerScreen />}
               {tab.id === 'activities' && <ActivitiesScreen isActive={activeTab === 'activities'} />}
             </View>
           ))}

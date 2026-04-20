@@ -1,10 +1,11 @@
 import Config from 'react-native-config';
 const MAPBOX_TOKEN = Config.MAPBOX_TOKEN;
 
-export function buildMapboxHTML(initialLat, initialLon, lineColor) {
+export function buildMapboxHTML(initialLat, initialLon, lineColor, bottomPadding) {
   const lat = String(initialLat);
   const lon = String(initialLon);
   const color = lineColor || '#EE5514';
+  const padBottom = Math.round(bottomPadding || 0);
 
   return (
     '<!DOCTYPE html><html><head>' +
@@ -24,8 +25,10 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor) {
     '});' +
     'var coords = [], allCoords = [], isTracking = false, mapReady = false, pendingColor = null;' +
     'var dotCoords = [' + lon + ', ' + lat + '];' +
+    'var PAD = { top: 0, bottom: ' + padBottom + ', left: 0, right: 0 };' +
     'map.on("load", function() {' +
     '  mapReady = true;' +
+    '  map.setPadding(PAD);' +
     '  map.getStyle().layers.forEach(function(layer) { if (layer.type === "symbol") map.removeLayer(layer.id); });' +
     '  map.addSource("route", { type: "geojson", data: geojson() });' +
     '  map.addLayer({ id: "route", type: "line", source: "route", layout: { "line-join": "round", "line-cap": "round" }, paint: { "line-color": "' + color + '", "line-width": 4 } });' +
@@ -43,7 +46,7 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor) {
     '    var msg = JSON.parse(e.data);' +
     '    if (msg.type === "position") {' +
     '      var ll = [msg.lon, msg.lat];' +
-    '      dotCoords = ll; updateDot(); map.panTo(ll);' +
+    '      dotCoords = ll; updateDot(); map.easeTo({ center: ll, padding: PAD, duration: 300 });' +
     '      if (isTracking) { coords.push(ll); allCoords[allCoords.length-1] = coords.slice(); updateRoute(); }' +
     '    } else if (msg.type === "start") {' +
     '      isTracking = true; coords = []; allCoords.push([]);' +
@@ -51,6 +54,11 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor) {
     '      isTracking = true; coords = []; allCoords.push([]);' +
     '    } else if (msg.type === "pause") {' +
     '      isTracking = false;' +
+    '    } else if (msg.type === "restore") {' +
+    '      allCoords = msg.segments.filter(function(s){ return s.length > 1; });' +
+    '      isTracking = true;' +
+    '      if (allCoords.length > 0) { coords = allCoords[allCoords.length-1].slice(); } else { coords = []; allCoords.push([]); }' +
+    '      updateRoute();' +
     '    } else if (msg.type === "finish") {' +
     '      isTracking = false;' +
     '      var flat = allCoords.reduce(function(a,b){return a.concat(b);}, []);' +
@@ -60,7 +68,7 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor) {
     '      }' +
     '    } else if (msg.type === "clear") {' +
     '      coords = []; allCoords = []; isTracking = false; updateRoute();' +
-    '      map.flyTo({ center: dotCoords, zoom: 17 });' +
+    '      map.flyTo({ center: dotCoords, zoom: 17, padding: PAD });' +
     '    } else if (msg.type === "resize") {' +
     '      map.resize();' +
     '    } else if (msg.type === "setColor") {' +
