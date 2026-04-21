@@ -346,7 +346,10 @@ export default function WalkingTrackerScreen() {
     lastGpsPosRef.current = null; // reset on each new watch so first point is always accepted
     return Geolocation.watchPosition(
       (pos) => {
-        const { latitude, longitude } = pos.coords;
+        const { latitude, longitude, accuracy } = pos.coords;
+
+        // Drop low-accuracy fixes (cold start, cached network location).
+        if (accuracy > 25) return;
 
         // Drop outlier points (stale cached fix, GPS drift).
         // At 1500ms / 3m distanceFilter a real step is never > 50m from the last point.
