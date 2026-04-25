@@ -155,7 +155,7 @@ export default function PetConnectCard() {
   }, []);
 
   useEffect(() => {
-    setupBluetooth();
+    initializeBluetooth();
     StepCounter?.queryBleState?.()?.catch?.(() => {});
 
     const connSub = nativeEmitter?.addListener('BleConnectionUpdate', async (state) => {
