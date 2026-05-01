@@ -8,6 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Circle } from 'react-native-svg';
 import PetConnectCard from './PetConnectCard';
 import BleStepService from './BleStepService';
+import LeaderboardCard from './LeaderboardCard';
 
 const { StepCounter } = NativeModules;
 const eventEmitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
@@ -149,9 +150,7 @@ export default function HomeScreen({ isActive }) {
     try {
       await AsyncStorage.setItem('stepsConvertedToday', JSON.stringify({ date: todayKey(), steps: newConverted }));
       await AsyncStorage.setItem('pendingTreats', String(newTreats));
-    } catch (e) {
-      console.warn('Convert failed', e);
-    }
+    } catch (e) {}
   };
 
   /* -------- feed pet -------- */
@@ -163,9 +162,7 @@ export default function HomeScreen({ isActive }) {
       const newTreats = Math.max(0, pendingTreats - 1);
       setPendingTreats(newTreats);
       AsyncStorage.setItem('pendingTreats', String(newTreats)).catch(() => {});
-    } catch (e) {
-      console.warn('Feed failed', e);
-    }
+    } catch (e) {}
   };
 
   /* -------- goal modal -------- */
@@ -191,6 +188,8 @@ export default function HomeScreen({ isActive }) {
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
 
       <PetConnectCard />
+
+      <LeaderboardCard />
 
       {/* Daily Steps Card */}
       <View style={styles.stepsCard}>

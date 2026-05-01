@@ -8,10 +8,18 @@
 #include "esp_mac.h"
 #include "esp_gap_ble_api.h"
 
+/* ============================================================
+   PET ID — UNIQUE PER DEVICE
+   !!  CHANGE THIS BEFORE FLASHING EACH PRODUCTION UNIT  !!
+   Format: "KOS" + 6 digits (e.g., KOS000001, KOS000002, ...)
+   ============================================================ */
+#define PET_ID "KOS000001"
+
 /* ---------------- BLE CONFIG ---------------- */
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define NOTIFY_UUID         "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+#define PETID_UUID          "beb5483e-36e1-4688-b7f5-ea07361b26aa"
 
 /* ---------------- OLED ---------------- */
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -46,6 +54,7 @@ const unsigned long PERSIST_INTERVAL  = 5000;
 unsigned long lastBlinkTime = 0, lastStateChangeTime = 0;
 unsigned long transitionStartTime = 0, feedingStartTime = 0;
 unsigned long lastFedTime = 0, lastPersistTime = 0;
+
 
 // Whether stars should show during current feed animation
 bool feedShowStars = false;
@@ -366,6 +375,7 @@ void setup() {
     esp_read_mac(mac, ESP_MAC_BT);
     snprintf(bleName, sizeof(bleName), "softwear-%02X%02X", mac[4], mac[5]);
   }
+
   BLEDevice::init(bleName);
   BLEServer  *pServer  = BLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -378,6 +388,10 @@ void setup() {
   pNotifyChar = pService->createCharacteristic(
     NOTIFY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
   pNotifyChar->addDescriptor(new BLE2902());
+
+  BLECharacteristic *pPetIdChar = pService->createCharacteristic(
+    PETID_UUID, BLECharacteristic::PROPERTY_READ);
+  pPetIdChar->setValue(PET_ID);
 
   pService->start();
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();

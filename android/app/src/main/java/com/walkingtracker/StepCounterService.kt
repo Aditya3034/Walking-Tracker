@@ -162,6 +162,50 @@ class StepCounterService : Service(), SensorEventListener {
             emitToJs("BleConnectionUpdate", "connected")
             // Write CONNECTED so ESP32 replies with current hunger state
             mainHandler.postDelayed({ writeBle("CONNECTED") }, 300)
+
+            // Read Pet ID (fires onCharacteristicRead callback below)
+            val petIdChar = service.getCharacteristic(BLE_PETID_UUID)
+            if (petIdChar != null) {
+                Log.d(TAG, "petIdChar found on device, will read in 500ms")
+                mainHandler.postDelayed({
+                    try {
+                        val ok = gatt.readCharacteristic(petIdChar)
+                        Log.d(TAG, "petId read requested, success=$ok")
+                    } catch (e: Exception) { Log.w(TAG, "petId read threw: ${e.message}") }
+                }, 500)
+            } else {
+                Log.w(TAG, "petIdChar NOT found on device — ESP32 firmware likely missing the new characteristic")
+            }
+        }
+
+        // API 33+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == BLE_PETID_UUID) {
+                val petId = String(value).trim()
+                Log.d(TAG, "Pet ID read: $petId")
+                emitToJs("BlePetIdUpdate", petId)
+            }
+        }
+
+        // API < 33
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU &&
+                status == BluetoothGatt.GATT_SUCCESS &&
+                characteristic.uuid == BLE_PETID_UUID) {
+                val petId = String(characteristic.value).trim()
+                Log.d(TAG, "Pet ID read: $petId")
+                emitToJs("BlePetIdUpdate", petId)
+            }
         }
 
         // API 33+
@@ -291,6 +335,7 @@ class StepCounterService : Service(), SensorEventListener {
         val BLE_SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
         val BLE_WRITE_UUID   = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
         val BLE_NOTIFY_UUID  = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a9")
+        val BLE_PETID_UUID   = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26aa")
         val BLE_CCCD_UUID    = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         const val ACTION_CONNECT_BLE         = "com.walkingtracker.CONNECT_BLE"

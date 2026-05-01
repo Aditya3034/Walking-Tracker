@@ -95,7 +95,6 @@ class BleStepService {
       await StepCounter.writeBleCommand(command);
       return true;
     } catch (e) {
-      console.error('writeBleCommand failed:', e);
       return false;
     }
   }

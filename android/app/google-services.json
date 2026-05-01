@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "532197659875",
+    "project_id": "softwear-275ea",
+    "storage_bucket": "softwear-275ea.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:532197659875:android:0c89104a21f171034ee1d6",
+        "android_client_info": {
+          "package_name": "com.walkingtracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDHIRyY513wA21P47E3ISThaFyPIR-xTkk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

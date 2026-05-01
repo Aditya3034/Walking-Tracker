@@ -24,15 +24,13 @@ import { WebView } from 'react-native-webview';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
 import { buildMapboxHTML } from './mapboxHtml';
+import { syncSessions } from './syncSessions';
 
 Geolocation.setRNConfiguration({ skipPermissionRequests: true });
 
 const { StepCounter } = NativeModules;
 if (!StepCounter) {
-  console.error(
-    '[StepCounter] Native module "StepCounter" is not registered. ' +
-    'Ensure StepCounterPackage is added to MainApplication and the app has been rebuilt.'
-  );
+  // Native module missing — likely a misconfigured build
 }
 const eventEmitter = new NativeEventEmitter(StepCounter || null);
 
@@ -275,9 +273,7 @@ export default function WalkingTrackerScreen() {
               longitude: p.lng,
             }));
             if (bgRoute.length > 0) setRouteSegments([[...bgRoute]]);
-          } catch (e) {
-            console.log('Route restore failed', e);
-          }
+          } catch (e) {}
 
           // Restore duration from persisted timestamps
           try {
@@ -302,9 +298,7 @@ export default function WalkingTrackerScreen() {
           }
           watchIdRef.current = startGpsWatch();
         }
-      } catch (e) {
-        console.log('Mount sync failed', e);
-      }
+      } catch (e) {}
     };
     syncOnMount();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -333,9 +327,7 @@ export default function WalkingTrackerScreen() {
             // Don't override 'paused' — user explicitly paused, background steps are still counted
             setTrackingState(prev => prev === 'idle' ? 'idle' : prev);
           }
-        } catch (e) {
-          console.log('Background step sync failed', e);
-        }
+        } catch (e) {}
       }
     });
     return () => sub.remove();
@@ -378,7 +370,7 @@ export default function WalkingTrackerScreen() {
           return updated;
         });
       },
-      (err) => console.log('GPS error', err),
+      () => {},
       { enableHighAccuracy: true, distanceFilter: 3, interval: 1500, fastestInterval: 750 }
     );
   };
@@ -420,12 +412,17 @@ export default function WalkingTrackerScreen() {
   const saveSession = async (finalSteps, finalRoute, finalSegments, finalDuration) => {
     const _d = new Date();
     const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
+    const distance = calcSegmentsDistance(finalSegments);
+    const sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const session = {
+      sessionId,
       steps: finalSteps,
+      distance,                    // metres
       route: finalRoute,           // flat — backward compat
       segments: finalSegments,     // array of arrays — used for gap rendering
       duration: finalDuration,     // seconds
       timestamp: Date.now(),
+      synced: false,
     };
     try {
       const existing = await AsyncStorage.getItem('activities');
@@ -433,9 +430,7 @@ export default function WalkingTrackerScreen() {
       if (!parsed[today]) parsed[today] = [];
       parsed[today].push(session);
       await AsyncStorage.setItem('activities', JSON.stringify(parsed));
-    } catch (e) {
-      console.log('Save failed', e);
-    }
+    } catch (e) {}
   };
 
   /* -------- tracking controls -------- */
@@ -462,9 +457,7 @@ export default function WalkingTrackerScreen() {
       StepCounter.startStepCounter();
     }
     BleStepService.startStepTracking();
-    try { await StepCounter.startBackgroundService(); } catch (e) {
-      console.warn('startBackgroundService error', e);
-    }
+    try { await StepCounter.startBackgroundService(); } catch (e) {}
     setTrackingState('tracking');
   };
 
@@ -504,6 +497,8 @@ export default function WalkingTrackerScreen() {
     // Don't litter the calendar with empty entries
     if (steps > 0 || flatRoute.length > 0) {
       await saveSession(steps, flatRoute, routeSegments, finalDuration);
+      // Push to Firestore now; failures stay unsynced and get retried on next bulk trigger
+      syncSessions().catch(() => {});
     }
     await AsyncStorage.removeItem('sessionDuration');
 
@@ -516,12 +511,8 @@ export default function WalkingTrackerScreen() {
     BleStepService.stopStepTracking();
     isSensorStartedRef.current = false;
     StepCounter.stopStepCounter();
-    try { await StepCounter.stopBackgroundService(); } catch (e) {
-      console.warn('stopBackgroundService error', e);
-    }
-    try { await StepCounter.clearSessionData(); } catch (e) {
-      console.warn('clearSessionData error', e);
-    }
+    try { await StepCounter.stopBackgroundService(); } catch (e) {}
+    try { await StepCounter.clearSessionData(); } catch (e) {}
     await AsyncStorage.removeItem('sessionInProgress');
 
     sendMsg({ type: 'finish' }); // map fitBounds to show full route

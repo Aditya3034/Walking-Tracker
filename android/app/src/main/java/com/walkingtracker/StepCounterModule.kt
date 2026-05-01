@@ -292,6 +292,34 @@ class StepCounterModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    @android.annotation.SuppressLint("MissingPermission")
+    @ReactMethod
+    fun unpairExistingPets(promise: Promise) {
+        try {
+            val btManager = reactApplicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
+            val adapter = btManager?.adapter
+            if (adapter == null || !adapter.isEnabled) { promise.resolve(0); return }
+
+            val bonded = adapter.bondedDevices ?: emptySet()
+            var unpaired = 0
+            for (dev in bonded) {
+                val name = try { dev.name } catch (e: Exception) { null }
+                if (name?.startsWith("softwear-") == true) {
+                    try {
+                        val method = dev.javaClass.getMethod("removeBond")
+                        method.invoke(dev)
+                        unpaired++
+                    } catch (e: Exception) {
+                        android.util.Log.w("StepCounterModule", "removeBond failed for ${dev.address}: ${e.message}")
+                    }
+                }
+            }
+            promise.resolve(unpaired)
+        } catch (e: Exception) {
+            promise.reject("UNPAIR_FAILED", e.message, e)
+        }
+    }
+
     @ReactMethod
     fun disconnectBleDevice(promise: Promise) {
         try {

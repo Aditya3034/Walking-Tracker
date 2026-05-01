@@ -2,12 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
   Platform, Alert, Linking, NativeModules, NativeEventEmitter, ToastAndroid,
-  TextInput, Modal, Animated, Image, DeviceEventEmitter,
+  TextInput, Modal, Animated, Image, DeviceEventEmitter, AppState,
 } from 'react-native';
 
 import { requestMultiple, PERMISSIONS, RESULTS } from 'react-native-permissions';
 import BleStepService from './BleStepService';
 import manager from './BleManagerSingleton';
+import firestore from '@react-native-firebase/firestore';
 
 const { StepCounter } = NativeModules;
 const nativeEmitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
@@ -112,6 +113,8 @@ export default function PetConnectCard() {
   const [permissionsGranted, setPermissionsGranted] = useState(false);
   const [petName, setPetName] = useState('');
   const [petColor, setPetColor] = useState(PET_COLORS[0]);
+  const [petNameLocked, setPetNameLocked] = useState(false);
+  const pairedDeviceIdRef = useRef(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const deviceIdRef = useRef('');
@@ -151,12 +154,19 @@ export default function PetConnectCard() {
     const AsyncStorage = require('@react-native-async-storage/async-storage').default;
     AsyncStorage.getItem('petName').then(val => { if (val) setPetName(val); }).catch(() => {});
     AsyncStorage.getItem('petColor').then(val => { if (val) setPetColor(val); }).catch(() => {});
+    AsyncStorage.getItem('petNameChanged').then(val => setPetNameLocked(val === 'true')).catch(() => {});
+    AsyncStorage.getItem('pairedDeviceId').then(val => { pairedDeviceIdRef.current = val; }).catch(() => {});
 
   }, []);
 
   useEffect(() => {
     initializeBluetooth();
     StepCounter?.queryBleState?.()?.catch?.(() => {});
+
+    // Re-check BT state when app comes back to foreground (e.g., after toggling BT in settings)
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') checkBluetoothState();
+    });
 
     const connSub = nativeEmitter?.addListener('BleConnectionUpdate', async (state) => {
       if (state === 'connected') {
@@ -210,6 +220,7 @@ export default function PetConnectCard() {
       if (closeTimerRef.current)     clearTimeout(closeTimerRef.current);
       if (revealTimerRef.current)    clearTimeout(revealTimerRef.current);
       connSub?.remove();
+      appStateSub?.remove();
       unsubDisconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -261,6 +272,8 @@ export default function PetConnectCard() {
         [{ text: 'Cancel', style: 'cancel' }, { text: 'Open Settings', onPress: openBluetoothSettings }]);
       return;
     }
+    // Auto-unpair any system-bonded softwear-* device so it advertises again
+    try { await StepCounter?.unpairExistingPets?.(); } catch {}
     setDevices([]);
     setDeviceSlots(makeDeviceSlots(Math.random() * 360));
     pendingDevicesRef.current = [];
@@ -278,6 +291,8 @@ export default function PetConnectCard() {
         return;
       }
       if (!device) return;
+      // On home screen, only show the user's own paired pet
+      if (pairedDeviceIdRef.current && device.id !== pairedDeviceIdRef.current) return;
       if (pendingDevicesRef.current.find(d => d.id === device.id)) return;
       pendingDevicesRef.current = [...pendingDevicesRef.current, device];
       if (!revealTimerRef.current) {
@@ -336,6 +351,8 @@ export default function PetConnectCard() {
 
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
       await AsyncStorage.setItem('bleDeviceName', bleDeviceName).catch(() => {});
+      await AsyncStorage.setItem('pairedDeviceId', device.id).catch(() => {});
+      pairedDeviceIdRef.current = device.id;
       const savedPetName = await AsyncStorage.getItem('petName').catch(() => null);
       const displayName = savedPetName || bleDeviceName;
 
@@ -473,14 +490,18 @@ export default function PetConnectCard() {
 
             <Text style={em.label}>Name</Text>
             <TextInput
-              style={em.input}
+              style={[em.input, petNameLocked && em.inputDisabled]}
               value={nameInput}
               onChangeText={setNameInput}
-              autoFocus
+              autoFocus={!petNameLocked}
+              editable={!petNameLocked}
               maxLength={24}
               placeholder="Name your pet"
               placeholderTextColor="#94a3b8"
             />
+            {petNameLocked && (
+              <Text style={em.lockedHint}>Pet name can only be changed once. It's now permanent.</Text>
+            )}
 
             <Text style={em.label}>Color</Text>
             <View style={em.colorRow}>
@@ -500,18 +521,35 @@ export default function PetConnectCard() {
               <TouchableOpacity
                 style={em.saveBtn}
                 onPress={async () => {
+                  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
                   const trimmed = nameInput.trim();
-                  if (trimmed) {
+                  const nameChanged = !petNameLocked && trimmed && trimmed !== petName;
+
+                  if (nameChanged) {
                     setPetName(trimmed);
                     BleStepService.deviceName = trimmed;
                     setConnectedDevice(prev => prev ? { ...prev, name: trimmed } : prev);
-                    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
                     await AsyncStorage.setItem('petName', trimmed).catch(() => {});
+                    await AsyncStorage.setItem('petNameChanged', 'true').catch(() => {});
+                    setPetNameLocked(true);
                     await BleStepService.writeToDevice(`NAME:${trimmed}`).catch(() => {});
                   }
-                  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
                   await AsyncStorage.setItem('petColor', petColor).catch(() => {});
                   DeviceEventEmitter.emit('petColorChange', petColor);
+
+                  // Sync to Firestore (best-effort)
+                  try {
+                    const petId = await AsyncStorage.getItem('petId');
+                    if (petId) {
+                      const update = { petColor };
+                      if (nameChanged) {
+                        update.petName = trimmed;
+                        update.petNameChanged = true;
+                      }
+                      await firestore().collection('pets').doc(petId).update(update);
+                    }
+                  } catch (e) { /* offline — sync will pick it up next time */ }
+
                   setEditModalVisible(false);
                 }}
               >
@@ -637,6 +675,17 @@ const em = StyleSheet.create({
     color: '#0f172a',
     backgroundColor: '#f8fafc',
     marginBottom: 20,
+  },
+  inputDisabled: {
+    color: '#94a3b8',
+    backgroundColor: '#f1f5f9',
+  },
+  lockedHint: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: -14,
+    marginBottom: 18,
+    fontStyle: 'italic',
   },
   colorRow: {
     flexDirection: 'row',

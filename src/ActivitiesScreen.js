@@ -10,6 +10,7 @@ import {
   DeviceEventEmitter,
 } from 'react-native';
 import Svg, { Polyline, Rect, Circle, Path } from 'react-native-svg';
+import SessionDetailModal from './SessionDetailModal';
 
 function ChevronLeft({ size = 16, color = '#0f172a' }) {
   return (
@@ -38,8 +39,9 @@ const CELL_W   = Math.floor((width - CAL_PAD * 2 - COL_GAP * (COLS - 1)) / COLS)
 const CELL_H   = Math.round(CELL_W * 1.38) - 2;
 const CELL_R   = Math.round(CELL_W * 0.36); // pill radius
 
-const SESSION_W = width - 80;
-const SESSION_H = 160;
+// Grid layout — 2 cards per row, accounting for sheet padding (20*2) and gap (12)
+const SESSION_W = (width - 40 - 12) / 2;
+const SESSION_H = 130;
 
 const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
@@ -186,15 +188,14 @@ function DayCell({ day, active, faded, segments, traceColor = '#EE5514', onPress
 }
 
 /* ---------------- SESSION CARD ---------------- */
-function SessionCard({ session, index }) {
+function SessionCard({ session, onPress }) {
   const segsXY = getSessionSegmentsXY(session);
-  const norm   = normalizeSegmentsRect(segsXY, SESSION_W, SESSION_H);
-  const dist   = calcSessionDistance(session);
+  const norm   = normalizeSegmentsRect(segsXY, SESSION_W, SESSION_H - 40);
 
   return (
-    <View style={ss.card}>
-      <Svg width={SESSION_W} height={SESSION_H}>
-        <Rect x="0" y="0" width={SESSION_W} height={SESSION_H} rx="14" fill="#f1f5f9" />
+    <TouchableOpacity style={ss.card} onPress={onPress} activeOpacity={0.85}>
+      <Svg width={SESSION_W} height={SESSION_H - 40}>
+        <Rect x="0" y="0" width={SESSION_W} height={SESSION_H - 40} fill="#f1f5f9" />
         {norm.map((seg, i) => {
           if (seg.length < 2) return null;
           return (
@@ -210,18 +211,11 @@ function SessionCard({ session, index }) {
           );
         })}
       </Svg>
-      <View style={ss.meta}>
-        <View style={ss.left}>
-          <View style={ss.badge}>
-            <Text style={ss.badgeText}>{index + 1}</Text>
-          </View>
-          <Text style={ss.steps}>{session.steps.toLocaleString()} steps</Text>
-          {dist > 0 && <Text style={ss.dist}>{formatDistance(dist)}</Text>}
-          {session.duration > 0 && <Text style={ss.dist}>{formatDuration(session.duration)}</Text>}
-        </View>
-        {session.timestamp ? <Text style={ss.time}>{formatTime(session.timestamp)}</Text> : null}
+      <View style={ss.metaCompact}>
+        <Text style={ss.stepsCompact}>{session.steps.toLocaleString()}</Text>
+        <Text style={ss.stepsLabel}>steps</Text>
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -232,6 +226,7 @@ export default function ActivitiesScreen({ isActive = false }) {
   const [viewMonth, setViewMonth] = useState(now.getMonth());
   const [activities, setActivities] = useState({});
   const [selectedDate, setSelectedDate] = useState(null);
+  const [selectedSession, setSelectedSession] = useState(null);
   const [petColor, setPetColor] = useState('#EE5514');
 
   useEffect(() => {
@@ -398,21 +393,35 @@ export default function ActivitiesScreen({ isActive = false }) {
                 <Text style={styles.closeBtnText}>✕</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView contentContainerStyle={{ padding: 20, gap: 14 }} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              contentContainerStyle={ss.gridContainer}
+              showsVerticalScrollIndicator={false}
+            >
               {selectedSessions.length === 0 ? (
-                <View style={{ alignItems: 'center', paddingVertical: 48, gap: 12 }}>
+                <View style={{ alignItems: 'center', paddingVertical: 48, gap: 12, width: '100%' }}>
                   <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: C.border }} />
                   <Text style={{ fontSize: 14, color: C.text3, fontWeight: '500' }}>No sessions recorded</Text>
                 </View>
               ) : (
                 selectedSessions.map((session, i) => (
-                  <SessionCard key={i} session={session} index={i} />
+                  <SessionCard
+                    key={i}
+                    session={session}
+                    onPress={() => setSelectedSession(session)}
+                  />
                 ))
               )}
             </ScrollView>
           </View>
         </View>
       </Modal>
+
+      <SessionDetailModal
+        visible={!!selectedSession}
+        session={selectedSession}
+        onClose={() => setSelectedSession(null)}
+      />
+
     </>
   );
 }
@@ -456,12 +465,39 @@ const cs = StyleSheet.create({
 });
 
 const ss = StyleSheet.create({
+  gridContainer: {
+    padding: 20,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
   card: {
-    borderRadius: 16,
+    width: SESSION_W,
+    borderRadius: 14,
     overflow: 'hidden',
     backgroundColor: '#f1f5f9',
     borderWidth: 1,
     borderColor: C.border,
+  },
+  metaCompact: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: C.card,
+    alignItems: 'flex-start',
+  },
+  stepsCompact: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: C.text,
+    letterSpacing: -0.5,
+  },
+  stepsLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: C.text3,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: -1,
   },
   meta: {
     flexDirection: 'row',

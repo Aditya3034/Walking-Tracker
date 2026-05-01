@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pets — readable by any authenticated user (leaderboard).
+    // Write only allowed if the doc's petId field matches the document ID
+    // (prevents data corruption / cross-pet writes by accident).
+    match /pets/{petId} {
+      allow read:   if request.auth != null;
+      allow write:  if request.auth != null
+                    && request.resource.data.petId == petId;
+
+      // Per-pet sessions
+      match /sessions/{sessionId} {
+        allow read, write: if request.auth != null;
+      }
+
+      // Per-pet stats (future: feedCount per date, etc.)
+      match /petStats/{statId} {
+        allow read, write: if request.auth != null;
+      }
+    }
+
+    // Username uniqueness index — readable for the "is this taken" check,
+    // writable atomically during onboarding.
+    match /usernames/{username} {
+      allow read, write: if request.auth != null;
+    }
+
+    // Catch-all: deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
