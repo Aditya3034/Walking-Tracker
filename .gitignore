@@ -77,3 +77,7 @@ esp32/.pio/
 !.yarn/sdks
 !.yarn/versions
 .env
+
+# Firebase config — download fresh from Firebase Console for each environment
+android/app/google-services.json
+ios/**/GoogleService-Info.plist

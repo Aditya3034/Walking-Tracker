@@ -15,11 +15,18 @@
    ============================================================ */
 #define PET_ID "KOS000001"
 
+/* ============================================================
+   DEVICE TYPE — HARDWARE VARIANT
+   Set per-variant before flashing. Allowed: "badge", "necklace"
+   ============================================================ */
+#define DEVICE_TYPE "badge"
+
 /* ---------------- BLE CONFIG ---------------- */
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define NOTIFY_UUID         "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define PETID_UUID          "beb5483e-36e1-4688-b7f5-ea07361b26aa"
+#define DEVICETYPE_UUID     "beb5483e-36e1-4688-b7f5-ea07361b26ab"
 
 /* ---------------- OLED ---------------- */
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -392,6 +399,10 @@ void setup() {
   BLECharacteristic *pPetIdChar = pService->createCharacteristic(
     PETID_UUID, BLECharacteristic::PROPERTY_READ);
   pPetIdChar->setValue(PET_ID);
+
+  BLECharacteristic *pDeviceTypeChar = pService->createCharacteristic(
+    DEVICETYPE_UUID, BLECharacteristic::PROPERTY_READ);
+  pDeviceTypeChar->setValue(DEVICE_TYPE);
 
   pService->start();
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();

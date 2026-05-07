@@ -31,6 +31,7 @@ export default function OnboardingScreen({ petId, onComplete }) {
 
     setSubmitting(true);
     try {
+      const deviceType = await AsyncStorage.getItem('deviceType');
       await firestore().runTransaction(async (transaction) => {
         const usernameRef = firestore().collection('usernames').doc(u);
         const snap = await transaction.get(usernameRef);
@@ -43,6 +44,7 @@ export default function OnboardingScreen({ petId, onComplete }) {
           petName: p,
           petColor: '#EE5514',
           petNameChanged: false,
+          ...(deviceType ? { deviceType } : {}),
           totalLifetimeSteps: 0,
           totalWalkCount: 0,
           joinDate: firestore.FieldValue.serverTimestamp(),

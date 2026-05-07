@@ -74,11 +74,13 @@ export async function syncSessions() {
       });
     }
 
+    const deviceType = await AsyncStorage.getItem('deviceType');
     batch.update(petRef, {
       totalLifetimeSteps: totalSteps,
       totalWalkCount:     totalCount,
       bestWalk:           { steps: bestSteps, distance: bestDistance },
       lastSyncAt:         firestore.FieldValue.serverTimestamp(),
+      ...(deviceType ? { deviceType } : {}),
     });
 
     await batch.commit();

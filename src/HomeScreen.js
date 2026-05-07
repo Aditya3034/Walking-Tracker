@@ -14,7 +14,7 @@ const { StepCounter } = NativeModules;
 const eventEmitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
 
 const DEFAULT_GOAL = 10000;
-const STEPS_PER_TREAT = 100; // steps needed to earn 1 treat
+const STEPS_PER_TREAT = 1000; // steps needed to earn 1 treat
 
 /* -------------------- CIRCULAR PROGRESS -------------------- */
 

@@ -107,6 +107,7 @@ class StepCounterService : Service(), SensorEventListener {
        ============================================================ */
     private var bluetoothGatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
+    private var deviceTypeChar: BluetoothGattCharacteristic? = null
     private var bleConnected = false
     private var currentDeviceId: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -121,6 +122,7 @@ class StepCounterService : Service(), SensorEventListener {
                 Log.i(TAG, "BLE disconnected status=$status")
                 bleConnected = false
                 writeChar = null
+                deviceTypeChar = null
                 // Clear stored hunger so it doesn't show stale overlay on next app open
                 getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit().putString(BLE_HUNGER_KEY, "NORMAL").apply()
@@ -140,6 +142,7 @@ class StepCounterService : Service(), SensorEventListener {
                 return
             }
             writeChar = service.getCharacteristic(BLE_WRITE_UUID)
+            deviceTypeChar = service.getCharacteristic(BLE_DEVICETYPE_UUID)
 
             // Enable notifications on NOTIFY characteristic
             val notifyChar = service.getCharacteristic(BLE_NOTIFY_UUID)
@@ -179,32 +182,57 @@ class StepCounterService : Service(), SensorEventListener {
         }
 
         // API 33+
+        @SuppressLint("MissingPermission")
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
             status: Int
         ) {
-            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == BLE_PETID_UUID) {
-                val petId = String(value).trim()
-                Log.d(TAG, "Pet ID read: $petId")
-                emitToJs("BlePetIdUpdate", petId)
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+            when (characteristic.uuid) {
+                BLE_PETID_UUID -> {
+                    val petId = String(value).trim()
+                    Log.d(TAG, "Pet ID read: $petId")
+                    emitToJs("BlePetIdUpdate", petId)
+                    deviceTypeChar?.let {
+                        try { gatt.readCharacteristic(it) }
+                        catch (e: Exception) { Log.w(TAG, "deviceType read threw: ${e.message}") }
+                    }
+                }
+                BLE_DEVICETYPE_UUID -> {
+                    val deviceType = String(value).trim()
+                    Log.d(TAG, "Device type read: $deviceType")
+                    emitToJs("BleDeviceTypeUpdate", deviceType)
+                }
             }
         }
 
         // API < 33
+        @SuppressLint("MissingPermission")
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU &&
-                status == BluetoothGatt.GATT_SUCCESS &&
-                characteristic.uuid == BLE_PETID_UUID) {
-                val petId = String(characteristic.value).trim()
-                Log.d(TAG, "Pet ID read: $petId")
-                emitToJs("BlePetIdUpdate", petId)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+            when (characteristic.uuid) {
+                BLE_PETID_UUID -> {
+                    val petId = String(characteristic.value).trim()
+                    Log.d(TAG, "Pet ID read: $petId")
+                    emitToJs("BlePetIdUpdate", petId)
+                    deviceTypeChar?.let {
+                        try { gatt.readCharacteristic(it) }
+                        catch (e: Exception) { Log.w(TAG, "deviceType read threw: ${e.message}") }
+                    }
+                }
+                BLE_DEVICETYPE_UUID -> {
+                    val deviceType = String(characteristic.value).trim()
+                    Log.d(TAG, "Device type read: $deviceType")
+                    emitToJs("BleDeviceTypeUpdate", deviceType)
+                }
             }
         }
 
@@ -336,6 +364,7 @@ class StepCounterService : Service(), SensorEventListener {
         val BLE_WRITE_UUID   = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
         val BLE_NOTIFY_UUID  = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a9")
         val BLE_PETID_UUID   = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26aa")
+        val BLE_DEVICETYPE_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26ab")
         val BLE_CCCD_UUID    = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         const val ACTION_CONNECT_BLE         = "com.walkingtracker.CONNECT_BLE"

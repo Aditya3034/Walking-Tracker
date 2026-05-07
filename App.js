@@ -138,6 +138,25 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
+  // Device type listener — hardware variant ("badge" / "necklace")
+  useEffect(() => {
+    const { StepCounter } = NativeModules;
+    if (!StepCounter) return;
+    const emitter = new NativeEventEmitter(StepCounter);
+    const sub = emitter.addListener('BleDeviceTypeUpdate', async (deviceType) => {
+      if (!deviceType) return;
+      try {
+        await AsyncStorage.setItem('deviceType', deviceType);
+        const currentPetId = await AsyncStorage.getItem('petId');
+        if (currentPetId && auth().currentUser) {
+          await firestore().collection('pets').doc(currentPetId)
+            .set({ deviceType }, { merge: true });
+        }
+      } catch (e) {}
+    });
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     // Ask native service to re-emit BLE + hunger state — restores UI after app reopen
     const { StepCounter } = require('react-native').NativeModules;
