@@ -165,6 +165,7 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#e2e8f0',
+    marginTop: 16,
     marginBottom: 16,
   },
   lockedCard: {

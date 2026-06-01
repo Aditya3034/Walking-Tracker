@@ -13,6 +13,7 @@ import {
   Linking,
   DeviceEventEmitter,
   Animated,
+  Image,
 } from 'react-native';
 import {
   request,
@@ -21,6 +22,7 @@ import {
   RESULTS,
 } from 'react-native-permissions';
 import { WebView } from 'react-native-webview';
+import Feather from 'react-native-vector-icons/Feather';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
 import { buildMapboxHTML } from './mapboxHtml';
@@ -62,6 +64,12 @@ function displayDistance(metres) {
   return `${(metres / 1000).toFixed(2)} km`;
 }
 
+function displaySpeed(metres, secs) {
+  if (!secs || secs < 1) return '0.0 km/h';
+  const kmh = (metres / 1000) / (secs / 3600);
+  return `${kmh.toFixed(1)} km/h`;
+}
+
 function formatDuration(secs) {
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
@@ -73,7 +81,7 @@ function formatDuration(secs) {
 /* -------------------- MAIN SCREEN -------------------- */
 
 // trackingState: 'idle' | 'tracking' | 'paused' | 'finished'
-export default function WalkingTrackerScreen() {
+export default function WalkingTrackerScreen({ onBack }) {
   const [steps, setSteps] = useState(0);
   const [duration, setDuration] = useState(0);
   const [trackingState, setTrackingState] = useState('idle');
@@ -96,8 +104,14 @@ export default function WalkingTrackerScreen() {
   const webRef = useRef(null);
   const [initialPos, setInitialPos] = useState(lastKnownPos || { lat: 19.076, lon: 72.877 });
   const [mapReady, setMapReady] = useState(false);
+  // Resolve bundled pet logo asset URI once
+  const petLogoUri = useMemo(() => {
+    try { return Image.resolveAssetSource(require('./assets/swlogo.png')).uri; }
+    catch (e) { return ''; }
+  }, []);
   // Memoised so petColor/initialPos updates never reload the WebView — color applied via setColor message
-  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon, null, SCREEN_HEIGHT * 0.30), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon, null, SCREEN_HEIGHT * 0.30, petLogoUri), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [hasDevice, setHasDevice] = useState(false);
   const [gpsAvailable, setGpsAvailable] = useState(null); // null=unknown, true=ok, false=unavailable
   const [gpsPermissionResolved, setGpsPermissionResolved] = useState(false);
   const radarAnims = useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
@@ -153,6 +167,25 @@ export default function WalkingTrackerScreen() {
   useEffect(() => {
     if (mapReady) sendMsg({ type: 'setColor', color: petColor });
   }, [petColor, mapReady]);
+
+  /* -------- BLE connection state — drives the pet/dot marker swap -------- */
+  useEffect(() => {
+    const initial = BleStepService.getTrackingStatus?.();
+    if (initial?.hasDevice) setHasDevice(true);
+    const unsubDisconnect = BleStepService.onDisconnect(() => setHasDevice(false));
+    const { StepCounter } = NativeModules;
+    const emitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
+    const connSub = emitter?.addListener('BleConnectionUpdate', state => {
+      setHasDevice(state === 'connected');
+    });
+    return () => { unsubDisconnect?.(); connSub?.remove?.(); };
+  }, []);
+
+  /* -------- send marker mode to the map when connection / color changes -------- */
+  useEffect(() => {
+    if (!mapReady) return;
+    sendMsg({ type: 'setMarker', mode: hasDevice ? 'pet' : 'dot', color: petColor });
+  }, [hasDevice, petColor, mapReady]);
 
   /* -------- idle GPS watch — self-healing: restarts every 5s after an error -------- */
   useEffect(() => {
@@ -550,6 +583,20 @@ export default function WalkingTrackerScreen() {
   return (
     <View style={styles.container}>
 
+      {/* Top gradient: white at top → transparent below (mirrors bottom gradient) */}
+      <View style={styles.topGradient} pointerEvents="none">
+        {Array.from({ length: 20 }, (_, i) => (
+          <View key={i} style={{ flex: 1, backgroundColor: `rgba(255,255,255,${((19 - i) / 19) * 0.97})` }} />
+        ))}
+      </View>
+
+      {/* Back button — top-left over map */}
+      {onBack && (
+        <TouchableOpacity style={styles.backBtn} onPress={onBack} activeOpacity={0.7} hitSlop={10}>
+          <Feather name="chevron-left" size={22} color="#ffffff" />
+        </TouchableOpacity>
+      )}
+
       {/* ── MAP — top half ── */}
       <View style={styles.mapSection} onLayout={e => setMapSectionHeight(e.nativeEvent.layout.height)}>
         <WebView
@@ -634,7 +681,7 @@ export default function WalkingTrackerScreen() {
             <Text style={styles.stepsLabel}>steps</Text>
           </View>
 
-          {/* Distance + Duration row */}
+          {/* Distance + Duration + Speed row */}
           <View style={styles.metaRow}>
             <View style={styles.metaItem}>
               <Text style={styles.metaValue}>{displayDistance(calcSegmentsDistance(routeSegments))}</Text>
@@ -644,6 +691,11 @@ export default function WalkingTrackerScreen() {
             <View style={styles.metaItem}>
               <Text style={styles.metaValue}>{formatDuration(duration)}</Text>
               <Text style={styles.metaLabel}>duration</Text>
+            </View>
+            <View style={styles.metaDivider} />
+            <View style={styles.metaItem}>
+              <Text style={styles.metaValue}>{displaySpeed(calcSegmentsDistance(routeSegments), duration)}</Text>
+              <Text style={styles.metaLabel}>speed</Text>
             </View>
           </View>
         </View>
@@ -664,17 +716,17 @@ export default function WalkingTrackerScreen() {
             onPress={gpsAvailable === false ? undefined : startTracking}
             activeOpacity={gpsAvailable === false ? 1 : 0.85}
           >
-            <Text style={styles.startBtnIcon}>▶</Text>
+            <Feather name="play" size={28} color="#fff" style={{ marginLeft: 3 }} />
           </TouchableOpacity>
         )}
 
         {trackingState === 'tracking' && (
           <View style={styles.controlRow}>
             <TouchableOpacity style={styles.controlBtn} onPress={pauseTracking} activeOpacity={0.8}>
-              <Text style={styles.controlBtnIcon}>⏸</Text>
+              <Feather name="pause" size={26} color="#fff" />
             </TouchableOpacity>
             <TouchableOpacity style={styles.controlBtn} onPress={finishTracking} activeOpacity={0.8}>
-              <Text style={styles.controlBtnIcon}>⏹</Text>
+              <Feather name="square" size={24} color="#fff" />
             </TouchableOpacity>
           </View>
         )}
@@ -682,10 +734,10 @@ export default function WalkingTrackerScreen() {
         {trackingState === 'paused' && (
           <View style={styles.controlRow}>
             <TouchableOpacity style={styles.controlBtn} onPress={resumeTracking} activeOpacity={0.8}>
-              <Text style={styles.controlBtnIcon}>▶</Text>
+              <Feather name="play" size={26} color="#fff" style={{ marginLeft: 2 }} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.controlBtn} onPress={finishTracking} activeOpacity={0.8}>
-              <Text style={styles.controlBtnIcon}>⏹</Text>
+              <Feather name="square" size={24} color="#fff" />
             </TouchableOpacity>
           </View>
         )}
@@ -714,6 +766,31 @@ const C = {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  topGradient: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 120,
+    zIndex: 5,
+  },
+  backBtn: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#0f172a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 4,
+  },
 
   /* Map — full screen background */
   mapSection: {
@@ -732,6 +809,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
     gap: 7,
+    zIndex: 6,
   },
   statusBadgePaused: {
     borderColor: 'rgba(217,119,6,0.35)',
@@ -825,8 +903,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     paddingHorizontal: 28,
-    paddingBottom: 28,
-    gap: 16,
+    paddingBottom: 60, // tab pill is hidden on Tracker — no need to reserve room for it
+    gap: 36,
   },
   stepsGroup: { alignItems: 'center', width: '100%', gap: 10 },
   stepsBlock: { alignItems: 'center' },

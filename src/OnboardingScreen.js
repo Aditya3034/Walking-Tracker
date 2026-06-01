@@ -47,6 +47,7 @@ export default function OnboardingScreen({ petId, onComplete }) {
           ...(deviceType ? { deviceType } : {}),
           totalLifetimeSteps: 0,
           totalWalkCount: 0,
+          pendingTreats: 0,
           joinDate: firestore.FieldValue.serverTimestamp(),
           lastSyncAt: firestore.FieldValue.serverTimestamp(),
         });

@@ -5,7 +5,10 @@ import {
   Modal, TextInput, KeyboardAvoidingView, Platform, Pressable,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import auth from '@react-native-firebase/auth';
+import firestore from '@react-native-firebase/firestore';
 import Svg, { Circle } from 'react-native-svg';
+import Feather from 'react-native-vector-icons/Feather';
 import PetConnectCard from './PetConnectCard';
 import BleStepService from './BleStepService';
 import LeaderboardCard from './LeaderboardCard';
@@ -13,7 +16,6 @@ import LeaderboardCard from './LeaderboardCard';
 const { StepCounter } = NativeModules;
 const eventEmitter = StepCounter ? new NativeEventEmitter(StepCounter) : null;
 
-const DEFAULT_GOAL = 10000;
 const STEPS_PER_TREAT = 1000; // steps needed to earn 1 treat
 
 /* -------------------- CIRCULAR PROGRESS -------------------- */
@@ -22,7 +24,8 @@ function CircularProgress({ size = 170, strokeWidth = 13, steps, goal, color }) 
   const radius = (size - strokeWidth) / 2;
   const center = size / 2;
   const circumference = 2 * Math.PI * radius;
-  const ratio = Math.min(steps / Math.max(goal, 1), 1);
+  const hasGoal = goal && goal > 0;
+  const ratio = hasGoal ? Math.min(steps / goal, 1) : 0;
   const dashOffset = circumference * (1 - ratio);
 
   return (
@@ -53,7 +56,7 @@ export default function HomeScreen({ isActive }) {
   const [completedTodaySteps, setCompletedTodaySteps] = useState(0);
   const [convertedStepsToday, setConvertedStepsToday] = useState(0);
   const [pendingTreats, setPendingTreats] = useState(0);
-  const [stepGoal, setStepGoal] = useState(DEFAULT_GOAL);
+  const [stepGoal, setStepGoal] = useState(null);
   const [petColor, setPetColor] = useState('#EE5514');
   const [goalModalVisible, setGoalModalVisible] = useState(false);
   const [goalInput, setGoalInput] = useState('');
@@ -100,7 +103,8 @@ export default function HomeScreen({ isActive }) {
       setPendingTreats(parseInt(val, 10) || 0);
     }).catch(() => {});
     AsyncStorage.getItem('stepGoal').then(val => {
-      if (val) setStepGoal(parseInt(val, 10) || DEFAULT_GOAL);
+      const parsed = parseInt(val, 10);
+      if (parsed > 0) setStepGoal(parsed);
     }).catch(() => {});
     AsyncStorage.getItem('petColor').then(val => {
       if (val && val !== '#f1f5f9' && val !== '#ffffff') setPetColor(val);
@@ -137,20 +141,35 @@ export default function HomeScreen({ isActive }) {
     return () => { unsubDisconnect(); connSub?.remove(); };
   }, []);
 
+  /* -------- sync treat fields to Firestore (fire-and-forget) -------- */
+  const syncTreatsToFirestore = async (fields) => {
+    try {
+      const petId = await AsyncStorage.getItem('petId');
+      if (!petId || !auth().currentUser) return;
+      await firestore().collection('pets').doc(petId).set(fields, { merge: true });
+    } catch (e) {}
+  };
+
   /* -------- convert steps to treats -------- */
   const handleConvert = async () => {
     if (convertibleTreats <= 0) return;
     const stepsUsed = convertibleTreats * STEPS_PER_TREAT;
     const newConverted = convertedStepsToday + stepsUsed;
     const newTreats = pendingTreats + convertibleTreats;
+    const today = todayKey();
 
     setConvertedStepsToday(newConverted);
     setPendingTreats(newTreats);
 
     try {
-      await AsyncStorage.setItem('stepsConvertedToday', JSON.stringify({ date: todayKey(), steps: newConverted }));
+      await AsyncStorage.setItem('stepsConvertedToday', JSON.stringify({ date: today, steps: newConverted }));
       await AsyncStorage.setItem('pendingTreats', String(newTreats));
     } catch (e) {}
+
+    syncTreatsToFirestore({
+      pendingTreats: newTreats,
+      stepsConvertedToday: { date: today, steps: newConverted },
+    });
   };
 
   /* -------- feed pet -------- */
@@ -162,49 +181,58 @@ export default function HomeScreen({ isActive }) {
       const newTreats = Math.max(0, pendingTreats - 1);
       setPendingTreats(newTreats);
       AsyncStorage.setItem('pendingTreats', String(newTreats)).catch(() => {});
+      syncTreatsToFirestore({ pendingTreats: newTreats });
     } catch (e) {}
   };
 
   /* -------- goal modal -------- */
   const openGoalModal = () => {
-    setGoalInput(String(stepGoal));
+    setGoalInput(stepGoal ? String(stepGoal) : '');
     setGoalModalVisible(true);
   };
 
   const saveGoal = () => {
-    const parsed = parseInt(goalInput, 10);
-    if (!parsed || parsed < 1) return;
-    setStepGoal(parsed);
-    AsyncStorage.setItem('stepGoal', String(parsed)).catch(() => {});
+    const trimmed = goalInput.trim();
+    const parsed = parseInt(trimmed, 10);
+    if (trimmed === '' || !parsed || parsed < 1) {
+      // Clearing the goal — remove it
+      setStepGoal(null);
+      AsyncStorage.removeItem('stepGoal').catch(() => {});
+    } else {
+      setStepGoal(parsed);
+      AsyncStorage.setItem('stepGoal', String(parsed)).catch(() => {});
+    }
     setGoalModalVisible(false);
   };
 
   /* -------- derived -------- */
   const availableSteps = Math.max(0, completedTodaySteps - convertedStepsToday);
   const convertibleTreats = Math.floor(availableSteps / STEPS_PER_TREAT);
-  const pct = Math.min(Math.round((completedTodaySteps / Math.max(stepGoal, 1)) * 100), 100);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
 
       <PetConnectCard />
 
-      <LeaderboardCard />
-
-      {/* Daily Steps Card */}
-      <View style={styles.stepsCard}>
+      {/* Daily Steps — no card */}
+      <View style={styles.stepsBlock}>
         <View style={styles.ringWrap}>
           <CircularProgress steps={completedTodaySteps} goal={stepGoal} color={petColor} />
           <View style={styles.ringCenter}>
             <Text style={styles.stepsNumber}>{completedTodaySteps.toLocaleString()}</Text>
-            <Text style={styles.stepsLabel}>Today's Steps</Text>
+            {stepGoal ? (
+              <View style={styles.goalInline}>
+                <Text style={styles.goalInlineText}>/{stepGoal.toLocaleString()}</Text>
+                <TouchableOpacity onPress={openGoalModal} activeOpacity={0.6} hitSlop={8} style={styles.goalEditBtn}>
+                  <Feather name="edit-2" size={14} color={C.text3} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={openGoalModal} activeOpacity={0.7} hitSlop={8}>
+                <Text style={styles.setGoalLink}>Set goal</Text>
+              </TouchableOpacity>
+            )}
           </View>
-        </View>
-        <View style={styles.goalRow}>
-          <Text style={styles.goalText}>{pct}% of {stepGoal.toLocaleString()} goal</Text>
-          <TouchableOpacity onPress={openGoalModal} activeOpacity={0.7}>
-            <Text style={styles.setGoalBtn}>Set Goal</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
@@ -265,6 +293,8 @@ export default function HomeScreen({ isActive }) {
           <Text style={styles.noDeviceHint}>Connect your pet locket to feed</Text>
         )}
       </View>
+
+      <LeaderboardCard />
 
       {/* Set Goal Modal */}
       <Modal
@@ -340,38 +370,31 @@ const card = {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.bg },
-  contentContainer: { padding: 20, paddingBottom: 40 },
+  contentContainer: { padding: 20, paddingBottom: 100 }, // ~76 (floating tab pill) + ~24 breathing
 
-  /* Daily Steps Card */
-  stepsCard: {
-    ...card,
+  /* Daily Steps — no card wrapper */
+  stepsBlock: {
     marginTop: 16,
-    padding: 24,
     alignItems: 'center',
   },
   ringWrap: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
   },
   ringCenter: {
     position: 'absolute',
     alignItems: 'center',
   },
   stepsNumber: { fontSize: 36, fontWeight: '900', color: C.text },
-  stepsLabel: { fontSize: 11, color: C.text3, fontWeight: '600', textTransform: 'uppercase', marginTop: 2 },
-  goalRow: {
+  goalInline: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-    paddingHorizontal: 4,
+    gap: 6,
+    marginTop: 2,
   },
-  goalText: { fontSize: 13, color: C.text2, fontWeight: '500' },
-  setGoalBtn: { fontSize: 13, fontWeight: '700', color: C.accent },
+  goalInlineText: { fontSize: 13, color: C.text3, fontWeight: '600' },
+  goalEditBtn: { padding: 2 },
+  setGoalLink: { fontSize: 13, fontWeight: '700', color: C.accent, marginTop: 2 },
 
   /* Steps to Convert Card */
   convertCard: {

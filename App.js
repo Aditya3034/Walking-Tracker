@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StatusBar, StyleSheet, View, TouchableOpacity, Text, Animated, NativeEventEmitter, NativeModules, ActivityIndicator } from 'react-native';
+import { StatusBar, StyleSheet, View, TouchableOpacity, Text, Animated, NativeEventEmitter, NativeModules, BackHandler } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import { Platform } from 'react-native';
 import { check, PERMISSIONS, RESULTS } from 'react-native-permissions';
+import Feather from 'react-native-vector-icons/Feather';
 import WalkingTrackerScreen from './src/StepCounter';
 import ActivitiesScreen from './src/ActivitiesScreen';
 import HomeScreen from './src/HomeScreen';
@@ -17,15 +18,70 @@ import PermissionsOnboarding from './src/PermissionsOnboarding';
 import SettingsScreen from './src/SettingsScreen';
 import { syncSessions, syncIfStale, restoreSessionsFromCloud } from './src/syncSessions';
 const TABS = [
-  { id: 'home',       label: 'Home'  },
-  { id: 'tracker',    label: 'Track' },
-  { id: 'activities', label: 'Log'   },
+  { id: 'home',       icon: 'home'      },
+  { id: 'tracker',    icon: 'activity'  },
+  { id: 'activities', icon: 'clipboard' },
+  { id: 'settings',   icon: 'settings'  },
 ];
+
+// Determinate-looking progress bar — ramps toward 95% on a fixed curve,
+// then visually pegs there until the parent unmounts when work completes.
+function FakeProgressBar({ color = '#0f172a' }) {
+  const progress = useRef(new Animated.Value(0)).current;
+  const [pct, setPct] = useState(0);
+  useEffect(() => {
+    const listener = progress.addListener(({ value }) => setPct(Math.round(value * 100)));
+    Animated.timing(progress, {
+      toValue: 0.95,
+      duration: 5000,
+      useNativeDriver: false,
+    }).start();
+    return () => progress.removeListener(listener);
+  }, [progress]);
+  const widthInterp = progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+  return (
+    <View style={progressStyles.wrap}>
+      <View style={progressStyles.track}>
+        <Animated.View style={[progressStyles.fill, { width: widthInterp, backgroundColor: color }]} />
+      </View>
+      <Text style={progressStyles.pctText}>{pct}%</Text>
+    </View>
+  );
+}
+
+const progressStyles = StyleSheet.create({
+  wrap: {
+    position: 'absolute',
+    bottom: 40,
+    left: 32,
+    right: 32,
+    alignItems: 'center',
+    gap: 6,
+  },
+  track: {
+    width: '100%',
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: 'rgba(15,23,42,0.10)',
+    overflow: 'hidden',
+  },
+  fill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  pctText: {
+    fontSize: 11,
+    color: '#64748b',
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+});
 
 
 export default function App() {
   const [splashDone, setSplashDone] = useState(false);
   const [activeTab, setActiveTab] = useState('home');
+  const [prevTabBeforeTracker, setPrevTabBeforeTracker] = useState('home');
   const [hungerState, setHungerState] = useState('normal');
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const overlayColor = useRef(new Animated.Value(0)).current; // 0=amber, 1=red
@@ -37,7 +93,6 @@ export default function App() {
   const [checkingPet, setCheckingPet] = useState(false);
   const [permissionsReady, setPermissionsReady] = useState(false);
   const [permissionsChecked, setPermissionsChecked] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Load cached identity on mount
   useEffect(() => {
@@ -104,7 +159,7 @@ export default function App() {
           // when the same physical device is re-flashed with a new Pet ID.
           await AsyncStorage.multiRemove([
             'activities', 'username', 'petName', 'petColor', 'petNameChanged',
-            'lastSyncAt',
+            'lastSyncAt', 'pendingTreats', 'stepsConvertedToday',
           ]);
           setUsername(null);
         }
@@ -122,6 +177,17 @@ export default function App() {
             ['petNameChanged', data.petNameChanged ? 'true' : 'false'],
           ]);
           if (data.petColor) await AsyncStorage.setItem('petColor', data.petColor);
+          if (typeof data.pendingTreats === 'number') {
+            await AsyncStorage.setItem('pendingTreats', String(data.pendingTreats));
+          }
+          // Restore today's converted steps only if Firestore date matches today (prevents double-claiming yesterday's leftovers)
+          if (data.stepsConvertedToday && data.stepsConvertedToday.date) {
+            const d = new Date();
+            const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            if (data.stepsConvertedToday.date === today) {
+              await AsyncStorage.setItem('stepsConvertedToday', JSON.stringify(data.stepsConvertedToday));
+            }
+          }
           // Pull cloud sessions back into AsyncStorage (covers reinstall / new phone)
           await restoreSessionsFromCloud();
           setUsername(data.username || null);
@@ -163,6 +229,19 @@ export default function App() {
     StepCounter?.queryBleState?.()?.catch?.(() => {});
   }, []);
 
+  // System back button: navigate to home from any other tab; exit if already on home
+  useEffect(() => {
+    const handleBack = () => {
+      if (activeTab !== 'home') {
+        setActiveTab('home');
+        return true; // intercepted — don't exit
+      }
+      return false; // on home — let Android handle (exit)
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', handleBack);
+    return () => sub.remove();
+  }, [activeTab]);
+
   useEffect(() => {
     const applyHungerState = (state) => {
       setHungerState(state);
@@ -203,11 +282,6 @@ export default function App() {
     outputRange: ['rgba(251,191,36,0.18)', 'rgba(220,38,38,0.22)'],
   });
 
-  const headerBg = overlayColor.interpolate({
-    inputRange:  [0, 1],
-    outputRange: ['rgba(254,243,199,0.9)', 'rgba(254,226,226,0.9)'],
-  });
-
   const isHungry = hungerState !== 'normal';
 
   // Routing decision (after identity loaded from AsyncStorage)
@@ -234,8 +308,8 @@ export default function App() {
       <SafeAreaProvider style={styles.appContainer}>
         <StatusBar barStyle="dark-content" backgroundColor="#fff" />
         <SafeAreaView style={[styles.container, styles.loadingContainer]}>
-          <ActivityIndicator size="large" color="#0f172a" />
           <Text style={styles.loadingText}>Reading pet…</Text>
+          <FakeProgressBar />
         </SafeAreaView>
       </SafeAreaProvider>
     );
@@ -247,7 +321,21 @@ export default function App() {
         <StatusBar barStyle="dark-content" backgroundColor="#fff" />
         {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
         <SafeAreaView style={styles.container}>
-          <ConnectPetGate />
+          <ConnectPetGate
+            onDevSkip={async () => {
+              // TEMP DEV — bypass BLE for emulator UI work; remove before ship
+              const fakePetId = 'DEV_SKIP';
+              const fakeUsername = 'dev';
+              await AsyncStorage.multiSet([
+                ['petId', fakePetId],
+                ['username', fakeUsername],
+                ['petName', 'Dev Pet'],
+                ['petColor', '#dc2626'],
+              ]);
+              setUsername(fakeUsername);
+              setPetId(fakePetId);
+            }}
+          />
         </SafeAreaView>
       </SafeAreaProvider>
     );
@@ -274,31 +362,6 @@ export default function App() {
       {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
       <SafeAreaView style={styles.container}>
 
-        {/* Header — tints when hungry */}
-        <Animated.View style={[
-          styles.header,
-          isHungry && { backgroundColor: headerBg, borderBottomColor: 'transparent' },
-        ]}>
-          {activeTab === 'home' && (
-            <TouchableOpacity
-              style={styles.headerIconLeft}
-              onPress={() => setSettingsOpen(true)}
-              hitSlop={10}
-            >
-              <Text style={styles.headerIcon}>⚙</Text>
-            </TouchableOpacity>
-          )}
-          <Text style={styles.headerTitle}>SOFTWEAR.PET</Text>
-          {isHungry && (
-            <Text style={[
-              styles.hungerLabel,
-              hungerState === 'starving' && styles.hungerLabelStarving,
-            ]}>
-              {hungerState === 'starving' ? 'VERY HUNGRY' : 'HUNGRY'}
-            </Text>
-          )}
-        </Animated.View>
-
         <View style={styles.content}>
           {/* Content */}
           {TABS.map(tab => (
@@ -307,8 +370,19 @@ export default function App() {
               style={{ flex: 1, display: activeTab === tab.id ? 'flex' : 'none' }}
             >
               {tab.id === 'home'       && <HomeScreen key={petId || 'no-pet'} isActive={activeTab === 'home'} />}
-              {tab.id === 'tracker' && <WalkingTrackerScreen key={petId || 'no-pet'} />}
+              {tab.id === 'tracker' && <WalkingTrackerScreen key={petId || 'no-pet'} onBack={() => setActiveTab(prevTabBeforeTracker)} />}
               {tab.id === 'activities' && <ActivitiesScreen key={petId || 'no-pet'} isActive={activeTab === 'activities'} />}
+              {tab.id === 'settings' && (
+                <SettingsScreen
+                  key={petId || 'no-pet'}
+                  onLogout={() => {
+                    // Reset routing — back to gate. AsyncStorage was already cleared by SettingsScreen.
+                    setPetId(null);
+                    setUsername(null);
+                    setActiveTab('home');
+                  }}
+                />
+              )}
             </View>
           ))}
 
@@ -321,37 +395,35 @@ export default function App() {
           )}
         </View>
 
-        <View style={styles.tabBar}>
-          {TABS.map(tab => {
-            const active = activeTab === tab.id;
-            return (
-              <TouchableOpacity
-                key={tab.id}
-                style={[styles.tab, active && styles.tabActive]}
-                onPress={() => setActiveTab(tab.id)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
-                  {tab.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        {activeTab !== 'tracker' && (
+        <View style={styles.tabBarWrap}>
+          <View style={styles.tabBar}>
+            {TABS.map(tab => {
+              const active = activeTab === tab.id;
+              return (
+                <TouchableOpacity
+                  key={tab.id}
+                  style={styles.tab}
+                  onPress={() => {
+                    // Remember where we came from so the tracker back button returns there
+                    if (tab.id === 'tracker' && activeTab !== 'tracker') {
+                      setPrevTabBeforeTracker(activeTab);
+                    }
+                    setActiveTab(tab.id);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.tabIconWrap, active && styles.tabIconWrapActive]}>
+                    <Feather name={tab.icon} size={22} color="#ffffff" />
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
+        )}
 
       </SafeAreaView>
-
-      <SettingsScreen
-        visible={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        onLogout={() => {
-          setSettingsOpen(false);
-          // Reset routing — back to gate. AsyncStorage was already cleared by SettingsScreen.
-          setPetId(null);
-          setUsername(null);
-          setActiveTab('home');
-        }}
-      />
     </SafeAreaProvider>
   );
 }
@@ -418,31 +490,38 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
+  tabBarWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 30,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#ffffff',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    paddingBottom: 6,
+    backgroundColor: '#0f172a',
+    borderRadius: 25,
+    paddingHorizontal: 28,
+    paddingVertical: 16,
+    alignItems: 'center',
+    gap: 32,
+    minWidth: 320,
   },
   tab: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 12,
-    borderTopWidth: 2,
-    borderTopColor: 'transparent',
+    justifyContent: 'center',
   },
-  tabActive: {
-    borderTopColor: '#2563eb',
+  tabIconWrap: {
+    width: 60,
+    height: 45,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-  },
-  tabLabelActive: {
-    color: '#2563eb',
-    fontWeight: '700',
+  tabIconWrapActive: {
+    backgroundColor: 'rgba(255,255,255,0.16)',
   },
 });

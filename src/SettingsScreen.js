@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Modal, Alert, ActivityIndicator,
+  View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator,
   NativeModules,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -14,15 +14,18 @@ const KEYS_TO_CLEAR = [
   'petName',
   'petColor',
   'petNameChanged',
+  'deviceType',
   'bleDeviceName',
   'pairedDeviceId',
   'activities',
   'lastSyncAt',
   'sessionInProgress',
   'sessionDuration',
+  'pendingTreats',
+  'stepsConvertedToday',
 ];
 
-export default function SettingsScreen({ visible, onClose, onLogout }) {
+export default function SettingsScreen({ onLogout }) {
   const [loggingOut, setLoggingOut] = useState(false);
 
   const confirmLogout = () => {
@@ -51,28 +54,23 @@ export default function SettingsScreen({ visible, onClose, onLogout }) {
   };
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Settings</Text>
-          <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <Text style={styles.close}>✕</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.body}>
-          <TouchableOpacity
-            style={[styles.row, loggingOut && styles.rowDisabled]}
-            onPress={loggingOut ? undefined : confirmLogout}
-            activeOpacity={0.7}
-          >
-            {loggingOut
-              ? <ActivityIndicator color="#dc2626" />
-              : <Text style={styles.rowDanger}>Log out</Text>}
-          </TouchableOpacity>
-        </View>
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Settings</Text>
       </View>
-    </Modal>
+
+      <View style={styles.body}>
+        <TouchableOpacity
+          style={[styles.row, loggingOut && styles.rowDisabled]}
+          onPress={loggingOut ? undefined : confirmLogout}
+          activeOpacity={0.7}
+        >
+          {loggingOut
+            ? <ActivityIndicator color="#dc2626" />
+            : <Text style={styles.rowDanger}>Log out</Text>}
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 

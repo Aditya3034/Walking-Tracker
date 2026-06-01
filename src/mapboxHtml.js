@@ -1,18 +1,25 @@
 import Config from 'react-native-config';
 const MAPBOX_TOKEN = Config.MAPBOX_TOKEN;
 
-export function buildMapboxHTML(initialLat, initialLon, lineColor, bottomPadding) {
+export function buildMapboxHTML(initialLat, initialLon, lineColor, bottomPadding, petLogoUri) {
   const lat = String(initialLat);
   const lon = String(initialLon);
   const color = lineColor || '#EE5514';
   const padBottom = Math.round(bottomPadding || 0);
+  const logoSrc = petLogoUri || '';
 
   return (
     '<!DOCTYPE html><html><head>' +
     '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">' +
     '<link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet" />' +
     '<script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>' +
-    '<style>* { margin:0; padding:0; box-sizing:border-box; } html,body,#map { width:100%; height:100%; } .mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display:none !important; }</style>' +
+    '<style>' +
+    '* { margin:0; padding:0; box-sizing:border-box; }' +
+    'html,body,#map { width:100%; height:100%; }' +
+    '.mapboxgl-ctrl-logo, .mapboxgl-ctrl-attrib { display:none !important; }' +
+    '.pet-marker { width:32px; height:32px; border-radius:8px; border:2.5px solid #EE5514; background:#fff; display:flex; align-items:center; justify-content:center; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.18); display:none; }' +
+    '.pet-marker img { width:100%; height:100%; object-fit:cover; border-radius:5px; }' +
+    '</style>' +
     '</head><body><div id="map"></div><script>' +
     'mapboxgl.accessToken = "' + MAPBOX_TOKEN + '";' +
     'var map = new mapboxgl.Map({' +
@@ -36,11 +43,29 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor, bottomPadding
     '  map.addLayer({ id: "dot-outline", type: "circle", source: "dot", paint: { "circle-radius": 9, "circle-color": "#ffffff", "circle-opacity": 1 } });' +
     '  map.addLayer({ id: "dot-fill", type: "circle", source: "dot", paint: { "circle-radius": 7, "circle-color": "#2563eb", "circle-opacity": 1 } });' +
     '  if (pendingColor) { map.setPaintProperty("route", "line-color", pendingColor); pendingColor = null; }' +
+    '  petMarkerEl = document.createElement("div");' +
+    '  petMarkerEl.className = "pet-marker";' +
+    '  petMarkerEl.innerHTML = "' + (logoSrc ? '<img src=\\"' + logoSrc + '\\" />' : '') + '";' +
+    '  petMarker = new mapboxgl.Marker({ element: petMarkerEl }).setLngLat(dotCoords).addTo(map);' +
+    '  applyMarkerMode();' +
     '});' +
+    'var petMarker = null, petMarkerEl = null, markerMode = "dot", borderColor = "#EE5514";' +
+    'function applyMarkerMode() {' +
+    '  if (!mapReady) return;' +
+    '  if (markerMode === "pet") {' +
+    '    if (map.getLayer("dot-outline")) map.setLayoutProperty("dot-outline", "visibility", "none");' +
+    '    if (map.getLayer("dot-fill")) map.setLayoutProperty("dot-fill", "visibility", "none");' +
+    '    if (petMarkerEl) { petMarkerEl.style.display = "flex"; petMarkerEl.style.borderColor = borderColor; }' +
+    '  } else {' +
+    '    if (map.getLayer("dot-outline")) map.setLayoutProperty("dot-outline", "visibility", "visible");' +
+    '    if (map.getLayer("dot-fill")) map.setLayoutProperty("dot-fill", "visibility", "visible");' +
+    '    if (petMarkerEl) { petMarkerEl.style.display = "none"; }' +
+    '  }' +
+    '}' +
     'function geojson() { return { type: "Feature", geometry: { type: "MultiLineString", coordinates: allCoords } }; }' +
     'function dotGeojson() { return { type: "Feature", geometry: { type: "Point", coordinates: dotCoords } }; }' +
     'function updateRoute() { if (mapReady) map.getSource("route").setData(geojson()); }' +
-    'function updateDot() { if (mapReady) map.getSource("dot").setData(dotGeojson()); }' +
+    'function updateDot() { if (mapReady) { map.getSource("dot").setData(dotGeojson()); if (petMarker) petMarker.setLngLat(dotCoords); } }' +
     'function handleMsg(e) {' +
     '  try {' +
     '    var msg = JSON.parse(e.data);' +
@@ -73,6 +98,10 @@ export function buildMapboxHTML(initialLat, initialLon, lineColor, bottomPadding
     '      map.resize();' +
     '    } else if (msg.type === "setColor") {' +
     '      if (mapReady) { map.setPaintProperty("route", "line-color", msg.color); } else { pendingColor = msg.color; }' +
+    '    } else if (msg.type === "setMarker") {' +
+    '      if (msg.mode) markerMode = msg.mode;' +
+    '      if (msg.color) borderColor = msg.color;' +
+    '      applyMarkerMode();' +
     '    }' +
     '  } catch(err) {}' +
     '}' +
