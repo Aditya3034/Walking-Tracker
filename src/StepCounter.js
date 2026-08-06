@@ -13,7 +13,6 @@ import {
   Linking,
   DeviceEventEmitter,
   Animated,
-  Image,
 } from 'react-native';
 import {
   request,
@@ -26,6 +25,7 @@ import Feather from 'react-native-vector-icons/Feather';
 import BleStepService from './BleStepService';
 import Geolocation from 'react-native-geolocation-service';
 import { buildMapboxHTML } from './mapboxHtml';
+import { SWLOGO_DATA_URI } from './assets/swlogoBase64';
 import { syncSessions } from './syncSessions';
 
 Geolocation.setRNConfiguration({ skipPermissionRequests: true });
@@ -104,13 +104,10 @@ export default function WalkingTrackerScreen({ onBack }) {
   const webRef = useRef(null);
   const [initialPos, setInitialPos] = useState(lastKnownPos || { lat: 19.076, lon: 72.877 });
   const [mapReady, setMapReady] = useState(false);
-  // Resolve bundled pet logo asset URI once
-  const petLogoUri = useMemo(() => {
-    try { return Image.resolveAssetSource(require('./assets/swlogo.png')).uri; }
-    catch (e) { return ''; }
-  }, []);
+  // Pet logo as base64 data URI — WebView can't reliably load Metro asset URLs (cross-origin from about:blank)
+  // so we embed the image inline. See src/assets/swlogoBase64.js.
   // Memoised so petColor/initialPos updates never reload the WebView — color applied via setColor message
-  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon, null, SCREEN_HEIGHT * 0.30, petLogoUri), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const mapHtml = useMemo(() => buildMapboxHTML(initialPos.lat, initialPos.lon, null, SCREEN_HEIGHT * 0.30, SWLOGO_DATA_URI), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [hasDevice, setHasDevice] = useState(false);
   const [gpsAvailable, setGpsAvailable] = useState(null); // null=unknown, true=ok, false=unavailable
   const [gpsPermissionResolved, setGpsPermissionResolved] = useState(false);

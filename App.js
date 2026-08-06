@@ -243,27 +243,40 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    let pulseLoop = null;
+
+    const startPulse = (state) => {
+      // Stop any prior loop before starting a new one
+      if (pulseLoop) pulseLoop.stop();
+      // Starving pulses faster + slightly stronger than hungry
+      const peak     = state === 'starving' ? 1.0 : 0.85;
+      const period   = state === 'starving' ? 900  : 1500; // ms per half-cycle
+      pulseLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(overlayOpacity, { toValue: peak, duration: period, useNativeDriver: false }),
+          Animated.timing(overlayOpacity, { toValue: 0,    duration: period, useNativeDriver: false }),
+        ])
+      );
+      pulseLoop.start();
+    };
+
+    const stopPulse = () => {
+      if (pulseLoop) { pulseLoop.stop(); pulseLoop = null; }
+      Animated.timing(overlayOpacity, { toValue: 0, duration: 600, useNativeDriver: false }).start();
+    };
+
     const applyHungerState = (state) => {
       setHungerState(state);
       if (state === 'normal') {
-        Animated.timing(overlayOpacity, {
-          toValue: 0,
-          duration: 800,
+        stopPulse();
+      } else {
+        // Color animates between amber (hungry) and red (starving) — smooth tweens between states
+        Animated.timing(overlayColor, {
+          toValue: state === 'starving' ? 1 : 0,
+          duration: 1200,
           useNativeDriver: false,
         }).start();
-      } else {
-        Animated.parallel([
-          Animated.timing(overlayOpacity, {
-            toValue: 1,
-            duration: 1200,
-            useNativeDriver: false,
-          }),
-          Animated.timing(overlayColor, {
-            toValue: state === 'starving' ? 1 : 0,
-            duration: 1500,
-            useNativeDriver: false,
-          }),
-        ]).start();
+        startPulse(state);
       }
     };
 
@@ -273,13 +286,16 @@ export default function App() {
     const current = BleStepService.getHungerState();
     if (current !== 'normal') applyHungerState(current);
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (pulseLoop) pulseLoop.stop();
+    };
   }, [overlayOpacity, overlayColor]);
 
-  // Interpolate between amber and red as hunger worsens
+  // Pulse peaks alternate with full transparency, so we can use richer tints without crushing contrast.
   const overlayBg = overlayColor.interpolate({
     inputRange:  [0, 1],
-    outputRange: ['rgba(251,191,36,0.18)', 'rgba(220,38,38,0.22)'],
+    outputRange: ['rgba(251,191,36,0.22)', 'rgba(220,38,38,0.28)'],
   });
 
   const isHungry = hungerState !== 'normal';
@@ -295,7 +311,15 @@ export default function App() {
   if (showPermissions) {
     return (
       <SafeAreaProvider style={styles.appContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor={
+            hungerState === 'starving' ? '#fde2e2' :
+            hungerState === 'hungry'   ? '#fef3c7' :
+            '#fff'
+          }
+        />
+        {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
         <SafeAreaView style={styles.container}>
           <PermissionsOnboarding onComplete={() => setPermissionsReady(true)} />
         </SafeAreaView>
@@ -306,7 +330,15 @@ export default function App() {
   if (showChecking) {
     return (
       <SafeAreaProvider style={styles.appContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor={
+            hungerState === 'starving' ? '#fde2e2' :
+            hungerState === 'hungry'   ? '#fef3c7' :
+            '#fff'
+          }
+        />
+        {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
         <SafeAreaView style={[styles.container, styles.loadingContainer]}>
           <Text style={styles.loadingText}>Reading pet…</Text>
           <FakeProgressBar />
@@ -318,7 +350,14 @@ export default function App() {
   if (showGate) {
     return (
       <SafeAreaProvider style={styles.appContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor={
+            hungerState === 'starving' ? '#fde2e2' :
+            hungerState === 'hungry'   ? '#fef3c7' :
+            '#fff'
+          }
+        />
         {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
         <SafeAreaView style={styles.container}>
           <ConnectPetGate
@@ -344,7 +383,14 @@ export default function App() {
   if (showOnboarding) {
     return (
       <SafeAreaProvider style={styles.appContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor={
+            hungerState === 'starving' ? '#fde2e2' :
+            hungerState === 'hungry'   ? '#fef3c7' :
+            '#fff'
+          }
+        />
         {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
         <SafeAreaView style={styles.container}>
           <OnboardingScreen
@@ -358,7 +404,14 @@ export default function App() {
 
   return (
     <SafeAreaProvider style={styles.appContainer}>
-      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
+      <StatusBar
+          barStyle="dark-content"
+          backgroundColor={
+            hungerState === 'starving' ? '#fde2e2' :
+            hungerState === 'hungry'   ? '#fef3c7' :
+            '#fff'
+          }
+        />
       {showSplash && <SplashScreen onComplete={() => setSplashDone(true)} />}
       <SafeAreaView style={styles.container}>
 

@@ -59,6 +59,10 @@ yarn-error.log
 # PlatformIO
 esp32/.pio/
 
+# PlatformIO build artifacts (any subdirectory)
+**/.pio/
+**/.piopm
+
 # Ruby / CocoaPods
 **/Pods/
 /vendor/bundle/

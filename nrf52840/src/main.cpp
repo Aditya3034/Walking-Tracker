@@ -1,21 +1,34 @@
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+// ============================================================
+//  softwear.pet — XIAO nRF52840 Sense firmware
+//  Port of esp32c3/src/main.cpp preserving BLE wire protocol byte-for-byte.
+//
+//  Key differences from ESP32-C3 version:
+//    - BLE stack: Bluefruit (nRF SoftDevice) instead of Arduino ESP32 BLE
+//    - Persistence: InternalFS/LittleFS instead of Preferences NVS
+//    - Serial console: Adafruit_TinyUSB instead of native ESP32 CDC
+//    - No setCpuFrequencyMhz — nRF52 runs at fixed 64 MHz
+//    - I²C default pins on XIAO nRF52 already D4/D5 (call Wire.begin() no args)
+//
+//  What's preserved (must NOT change — the app depends on these):
+//    - Service UUID + characteristic UUIDs
+//    - Command strings: FEED / CONNECTED / NAME:*
+//    - Notify payload strings: NORMAL / HUNGRY / STARVING / FEEDING
+//    - Pet ID format + device type strings
+//    - Hunger + starving intervals
+// ============================================================
+
+#include <Adafruit_TinyUSB.h>    // Required by framework's Wire library
+#include <Arduino.h>
+#include <bluefruit.h>
 #include <U8g2lib.h>
 #include <Wire.h>
-#include <Preferences.h>
-#include "esp_mac.h"
-#include "esp_gap_ble_api.h"
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
+
+using namespace Adafruit_LittleFS_Namespace;
 
 /* ============================================================
-   LOG MACROS — Serial output only in dev builds.
-   In battery build (`pio run -e battery`), these compile to nothing,
-   saving CPU cycles + preventing accidental USB peripheral wake-ups.
-
-   Usage:
-     LOG("BLE connected");
-     LOGF("Hunger elapsed: %lu ms\n", elapsed);
+   LOG MACROS — same pattern as esp32c3/. No-ops in battery build.
    ============================================================ */
 #ifdef ENABLE_SERIAL_LOGS
   #define LOG_INIT()   Serial.begin(115200)
@@ -28,36 +41,55 @@
 #endif
 
 /* ============================================================
-   PET ID — UNIQUE PER DEVICE
-   !!  CHANGE THIS BEFORE FLASHING EACH PRODUCTION UNIT  !!
-   Format: "KOS" + 6 digits (e.g., KOS000001, KOS000002, ...)
+   PET ID — set per unit before flashing.
+   Format: "KOS" + 6 digits.
    ============================================================ */
 #define PET_ID "KOS000004"
 
 /* ============================================================
-   DEVICE TYPE — HARDWARE VARIANT
-   Set per-variant before flashing. Allowed: "badge", "necklace"
+   DEVICE TYPE — "badge" or "necklace"
    ============================================================ */
 #define DEVICE_TYPE "badge"
 
-/* ---------------- BLE CONFIG ---------------- */
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define NOTIFY_UUID         "beb5483e-36e1-4688-b7f5-ea07361b26a9"
-#define PETID_UUID          "beb5483e-36e1-4688-b7f5-ea07361b26aa"
-#define DEVICETYPE_UUID     "beb5483e-36e1-4688-b7f5-ea07361b26ab"
-
-/* ---------------- I2C PINS (Xiao ESP32-C3) ----------------
-   Xiao ESP32-C3 default I2C: SDA = D4 (GPIO6), SCL = D5 (GPIO7)
-   ---------------------------------------------------------- */
-#define I2C_SDA 6
-#define I2C_SCL 7
+/* ---------------- BLE UUIDs (MUST match ESP32-C3 firmware) ---------------- */
+// Bluefruit takes UUIDs as arrays of 16 bytes in reverse order.
+// Original string: 4fafc201-1fb5-459e-8fcc-c5c9c331914b
+static const uint8_t SERVICE_UUID[16] = {
+  0x4b, 0x91, 0x31, 0xc3, 0xc9, 0xc5, 0xcc, 0x8f,
+  0x9e, 0x45, 0xb5, 0x1f, 0x01, 0xc2, 0xaf, 0x4f
+};
+// beb5483e-36e1-4688-b7f5-ea07361b26a8 (WRITE)
+static const uint8_t CHR_WRITE_UUID[16] = {
+  0xa8, 0x26, 0x1b, 0x36, 0x07, 0xea, 0xf5, 0xb7,
+  0x88, 0x46, 0xe1, 0x36, 0x3e, 0x48, 0xb5, 0xbe
+};
+// beb5483e-36e1-4688-b7f5-ea07361b26a9 (NOTIFY)
+static const uint8_t CHR_NOTIFY_UUID[16] = {
+  0xa9, 0x26, 0x1b, 0x36, 0x07, 0xea, 0xf5, 0xb7,
+  0x88, 0x46, 0xe1, 0x36, 0x3e, 0x48, 0xb5, 0xbe
+};
+// beb5483e-36e1-4688-b7f5-ea07361b26aa (READ Pet ID)
+static const uint8_t CHR_PETID_UUID[16] = {
+  0xaa, 0x26, 0x1b, 0x36, 0x07, 0xea, 0xf5, 0xb7,
+  0x88, 0x46, 0xe1, 0x36, 0x3e, 0x48, 0xb5, 0xbe
+};
+// beb5483e-36e1-4688-b7f5-ea07361b26ab (READ device type)
+static const uint8_t CHR_DEVICETYPE_UUID[16] = {
+  0xab, 0x26, 0x1b, 0x36, 0x07, 0xea, 0xf5, 0xb7,
+  0x88, 0x46, 0xe1, 0x36, 0x3e, 0x48, 0xb5, 0xbe
+};
 
 /* ---------------- OLED ---------------- */
+// XIAO nRF52840 default I²C: SDA = D4 (P0.05), SCL = D5 (P0.04)
+// Wire.begin() with no args picks these up automatically.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
-/* ---------------- PERSISTENCE ---------------- */
-Preferences prefs;
+/* ---------------- BLE OBJECTS ---------------- */
+BLEService        svcPet(SERVICE_UUID);
+BLECharacteristic chrWrite(CHR_WRITE_UUID);
+BLECharacteristic chrNotify(CHR_NOTIFY_UUID);
+BLECharacteristic chrPetId(CHR_PETID_UUID);
+BLECharacteristic chrDeviceType(CHR_DEVICETYPE_UUID);
 
 /* ---------------- PET & EYE STATES ---------------- */
 enum PetMood { PET_NORMAL, PET_HUNGRY, PET_STARVING, PET_FEEDING };
@@ -68,7 +100,6 @@ enum EyeState {
   STATE_NEUTRAL, STATE_SURPRISED, STATE_SAD,
   STATE_SUSPICIOUS, STATE_LEFT, STATE_RIGHT, STATE_UP,
   STATE_DOWN, STATE_EXCITED,
-  // Dedicated states (not in random idle pool)
   STATE_HUNGRY, STATE_STARVING, STATE_HAPPY,
   STATE_COUNT
 };
@@ -87,17 +118,11 @@ unsigned long lastBlinkTime = 0, lastStateChangeTime = 0;
 unsigned long transitionStartTime = 0, feedingStartTime = 0;
 unsigned long lastFedTime = 0, lastPersistTime = 0;
 
-
-// Whether stars should show during current feed animation
 bool feedShowStars = false;
 
-/* ---------------- BLE NOTIFY CHAR ---------------- */
-BLECharacteristic *pNotifyChar = nullptr;
-
+/* ---------------- NOTIFY HELPER ---------------- */
 void notifyApp(const char* state) {
-  if (!pNotifyChar) return;
-  pNotifyChar->setValue(state);
-  pNotifyChar->notify();
+  chrNotify.notify((const uint8_t*)state, strlen(state));
 }
 
 /* ---------------- ANIMATION VARIABLES ---------------- */
@@ -114,13 +139,11 @@ float leftTargetOffsetX, leftTargetOffsetY, rightTargetOffsetX, rightTargetOffse
 float leftTargetAngle,  rightTargetAngle;
 int   centerX, centerY, leftEyeX, rightEyeX, eyeY;
 
-
 /* ---------------- EXCITED BOUNCE ---------------- */
 float excitedBounceY = 0;
 
 void updateExcitedBounce(unsigned long now) {
   if (currentEyeState == STATE_EXCITED) {
-    // Sine wave: period ~220ms, amplitude ±4px
     excitedBounceY = sin((float)now / 35.0f) * 4.0f;
   } else {
     excitedBounceY = 0;
@@ -133,7 +156,6 @@ const int MAX_STARS = 6;
 Star stars[MAX_STARS];
 int  starCount = 0;
 
-// Fixed star positions so they don't flicker — spawn once on FEED
 const int STAR_POS[MAX_STARS][2] = {
   {8,  6},  {118, 6},
   {4,  32}, {122, 32},
@@ -152,7 +174,6 @@ void spawnStars() {
 
 void clearStars() { starCount = 0; }
 
-// 4-point star: two crossed lines + diagonal lines
 void drawStar(int x, int y, int r) {
   u8g2.drawLine(x, y - r, x, y + r);
   u8g2.drawLine(x - r, y, x + r, y);
@@ -170,8 +191,8 @@ void renderStars(unsigned long now) {
 }
 
 /* ---------------- HUNGER SHAKE ---------------- */
-void setEyeState(EyeState newState);   // forward declaration
-void forceEyeState(EyeState newState); // forward declaration
+void setEyeState(EyeState newState);
+void forceEyeState(EyeState newState);
 
 int shakeOffset = 0;
 unsigned long lastShakeTime    = 0;
@@ -216,13 +237,58 @@ void updateHungerShake(unsigned long now) {
   }
 }
 
-/* ---------------- PERSISTENCE HELPERS ---------------- */
+/* ---------------- PERSISTENCE (LittleFS on internal flash) ---------------- */
+// File paths in the internal FS
+static const char* FN_ELAPSED    = "elapsed.bin";
+static const char* FN_DEVICENAME = "devname.txt";
+
 void persistHungerState() {
-  prefs.putULong("elapsed", millis() - lastFedTime);
+  uint32_t elapsed = millis() - lastFedTime;
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (f.open(FN_ELAPSED, FILE_O_WRITE)) {
+    // Truncate any existing data before writing new value
+    f.close();
+    InternalFS.remove(FN_ELAPSED);
+    if (f.open(FN_ELAPSED, FILE_O_WRITE)) {
+      f.write((const uint8_t*)&elapsed, sizeof(elapsed));
+      f.close();
+    }
+  }
 }
 
 void clearPersistedHunger() {
-  prefs.putULong("elapsed", 0);
+  InternalFS.remove(FN_ELAPSED);
+}
+
+uint32_t loadPersistedElapsed() {
+  uint32_t elapsed = 0;
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (f.open(FN_ELAPSED, FILE_O_READ)) {
+    f.read((uint8_t*)&elapsed, sizeof(elapsed));
+    f.close();
+  }
+  return elapsed;
+}
+
+void persistDeviceName(const char* name) {
+  InternalFS.remove(FN_DEVICENAME);
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (f.open(FN_DEVICENAME, FILE_O_WRITE)) {
+    f.write((const uint8_t*)name, strlen(name));
+    f.close();
+  }
+}
+
+String loadDeviceName() {
+  String result = "";
+  Adafruit_LittleFS_Namespace::File f(InternalFS);
+  if (f.open(FN_DEVICENAME, FILE_O_READ)) {
+    while (f.available()) {
+      result += (char)f.read();
+    }
+    f.close();
+  }
+  return result;
 }
 
 /* ---------------- CONNECTION STATE ---------------- */
@@ -230,71 +296,71 @@ bool bleConnected = false;
 unsigned long bleStatusShowUntil = 0;
 const unsigned long BLE_STATUS_DURATION = 2000;
 
-// BLE advertising window — power saver
-// Advertise for only 5 sec after boot or after a disconnect, then stop.
-// User must (re)connect via the phone app within that window.
+// 5-sec advertising window after boot / disconnect
 unsigned long advertisingStartTime = 0;
 bool advertisingActive = true;
-const unsigned long ADVERTISING_WINDOW = 5000;
+const unsigned long ADVERTISING_WINDOW = 60000;  // 60s during dev; drop to 5s for battery
 
-/* ---------------- BLE SERVER CALLBACKS ---------------- */
-class ServerCallbacks : public BLEServerCallbacks {
-  // Dual-argument overload — gets the remote BD address so we can request slower conn interval
-  void onConnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param) override {
-    bleConnected = true;
-    bleStatusShowUntil = millis() + BLE_STATUS_DURATION;
+/* ---------------- BLE CALLBACKS ---------------- */
+void onBleConnect(uint16_t conn_handle) {
+  bleConnected = true;
+  bleStatusShowUntil = millis() + BLE_STATUS_DURATION;
+  LOG("BLE connected");
 
-    // Request a slower BLE connection interval for power savings.
-    // BLE units: each = 1.25 ms. 240 = 300 ms, 400 = 500 ms.
-    // Phone may or may not honour — Android usually does, iOS is stricter.
-    esp_ble_conn_update_params_t conn_params = {};
-    memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
-    conn_params.min_int = 240;    // 300 ms
-    conn_params.max_int = 400;    // 500 ms
-    conn_params.latency = 0;      // skip 0 connection events
-    conn_params.timeout = 600;    // 6 sec supervision timeout (units of 10 ms)
-    esp_ble_gap_update_conn_params(&conn_params);
-  }
+  // TODO: request slower connection interval for power savings once basic
+  // connectivity is verified. Skipping for now to isolate connect-time issues.
+  (void)conn_handle;
+}
 
-  void onDisconnect(BLEServer *pServer) override {
-    bleConnected = false;
-    bleStatusShowUntil = millis() + BLE_STATUS_DURATION;
-    delay(500);
-    // Re-open the 5-sec advertising window so the user can reconnect after a disconnect
-    BLEDevice::getAdvertising()->start();
-    advertisingStartTime = millis();
-    advertisingActive = true;
-  }
-};
+void onBleDisconnect(uint16_t conn_handle, uint8_t reason) {
+  (void)conn_handle;
+  (void)reason;
+  bleConnected = false;
+  bleStatusShowUntil = millis() + BLE_STATUS_DURATION;
+  LOG("BLE disconnected");
+  delay(500);
+  // Re-open the 5-sec advertising window
+  Bluefruit.Advertising.start(0);   // 0 = advertise indefinitely; loop() enforces cutoff
+  advertisingStartTime = millis();
+  advertisingActive = true;
+}
 
-/* ---------------- BLE CHARACTERISTIC CALLBACK ---------------- */
-class MyCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pChar) {
-    String value = pChar->getValue().c_str();
-    if (value == "FEED") {
-      bool wasHungry   = (petMood == PET_HUNGRY || petMood == PET_STARVING);
-      petMood          = PET_FEEDING;
-      feedingStartTime = millis();
-      lastFedTime      = millis();
-      clearPersistedHunger();
-      notifyApp("FEEDING");
-      // Stars only when recovering from hunger; happy eyes only when already normal
-      feedShowStars = wasHungry;
-      if (feedShowStars) spawnStars();
-    } else if (value == "CONNECTED") {
-      if (petMood == PET_STARVING) notifyApp("STARVING");
-      else if (petMood == PET_HUNGRY) notifyApp("HUNGRY");
-      else notifyApp("NORMAL");
-    } else if (value.startsWith("NAME:")) {
-      String newName = value.substring(5);
-      newName.trim();
-      if (newName.length() > 0 && newName.length() <= 28) {
-        prefs.putString("deviceName", newName.c_str());
-        esp_ble_gap_set_device_name(newName.c_str());
-      }
+/* ---------------- BLE WRITE CALLBACK ---------------- */
+void onWriteCommand(uint16_t conn_handle, BLECharacteristic* chr, uint8_t* data, uint16_t len) {
+  (void)conn_handle;
+  (void)chr;
+
+  // Bluefruit gives us raw bytes; make a null-terminated copy for String comparisons
+  char buf[33];
+  uint16_t n = (len < sizeof(buf) - 1) ? len : (sizeof(buf) - 1);
+  memcpy(buf, data, n);
+  buf[n] = '\0';
+  String value = String(buf);
+
+  LOGF("BLE write: %s\n", buf);
+
+  if (value == "FEED") {
+    bool wasHungry   = (petMood == PET_HUNGRY || petMood == PET_STARVING);
+    petMood          = PET_FEEDING;
+    feedingStartTime = millis();
+    lastFedTime      = millis();
+    clearPersistedHunger();
+    notifyApp("FEEDING");
+    feedShowStars = wasHungry;
+    if (feedShowStars) spawnStars();
+  } else if (value == "CONNECTED") {
+    if (petMood == PET_STARVING) notifyApp("STARVING");
+    else if (petMood == PET_HUNGRY) notifyApp("HUNGRY");
+    else notifyApp("NORMAL");
+  } else if (value.startsWith("NAME:")) {
+    String newName = value.substring(5);
+    newName.trim();
+    if (newName.length() > 0 && newName.length() <= 28) {
+      persistDeviceName(newName.c_str());
+      Bluefruit.setName(newName.c_str());
     }
   }
-};
+}
 
 /* ---------------- EYE DIMENSIONS ---------------- */
 void updateEyeDimensions(EyeState state,
@@ -308,29 +374,24 @@ void updateEyeDimensions(EyeState state,
     case STATE_SURPRISED:
       lw *= 1.3; lh = lw; rw *= 1.3; rh = rw;
       break;
-
     case STATE_SAD:
       lh *= 0.7; rh *= 0.7; ly = ry = 8; la = 0; ra = 0;
       break;
-
     case STATE_HUNGRY:
       lh *= 0.63; rh *= 0.63;
       ly = 10;    ry = 10;
       lx = 4;     rx = -4;
       break;
-
     case STATE_STARVING:
       lh *= 0.63; rh *= 0.63;
       ly = 10;    ry = 10;
       lx = 4;     rx = -4;
       break;
-
     case STATE_HAPPY:
       lw *= 1.25; lh *= 1.25;
       rw *= 1.25; rh *= 1.25;
       ly = -6;    ry = -6;
       break;
-
     case STATE_SUSPICIOUS: break;
     case STATE_LEFT:
       lx = -10; rx = -14;
@@ -353,7 +414,6 @@ void updateEyeDimensions(EyeState state,
       lh *= 0.70; rh *= 0.70;
       break;
     case STATE_EXCITED:
-      // Wide eyes (not tall) — energy comes from the bounce, not size
       lw *= 1.3;  rw *= 1.3;
       break;
     default: break;
@@ -406,15 +466,13 @@ void drawFilledEllipse(int x0, int y0, int w, int h, float angle) {
 
 /* ---------------- SETUP ---------------- */
 void setup() {
-  // Lower CPU clock to 80 MHz — halves active CPU current (~10 mA saved).
-  // Pet animation + BLE work easily fits in the 16 ms frame budget at this clock.
-  setCpuFrequencyMhz(80);
+  LOG_INIT();
 
-  // Bring up I2C on Xiao C3 default pins before u8g2 init
-  Wire.begin(I2C_SDA, I2C_SCL);
+  // I²C on default XIAO nRF52 pins (D4 = SDA, D5 = SCL)
+  Wire.begin();
 
   u8g2.begin();
-  u8g2.setContrast(128);  // 0-255, default 255. Lower = dimmer + less current
+  u8g2.setContrast(128);
   centerX   = screenWidth / 2;
   centerY   = screenHeight / 2;
   leftEyeX  = centerX - eyeSpacing / 2 - eyeBaseWidth / 2;
@@ -424,61 +482,81 @@ void setup() {
   leftEyeWidth  = rightEyeWidth  = eyeBaseWidth;
   leftEyeHeight = rightEyeHeight = eyeBaseHeight;
 
-  prefs.begin("pet", false);
-  unsigned long savedElapsed = prefs.getULong("elapsed", 0);
+  // Persistence
+  InternalFS.begin();
+  uint32_t savedElapsed = loadPersistedElapsed();
   lastFedTime = millis() - savedElapsed;
 
-  String savedName = prefs.getString("deviceName", "");
+  // Bluefruit BLE setup — must .begin() before any Bluefruit.getAddr() call
+  Bluefruit.begin();
+  Bluefruit.setTxPower(4);   // dBm; 4 = default, +/-40 dB range on nRF52
+
+  // Determine BLE advertising name — persisted or MAC-derived
+  String savedName = loadDeviceName();
   char bleName[32];
   if (savedName.length() > 0) {
     strncpy(bleName, savedName.c_str(), sizeof(bleName) - 1);
     bleName[sizeof(bleName) - 1] = '\0';
   } else {
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_BT);
-    snprintf(bleName, sizeof(bleName), "softwear-%02X%02X", mac[4], mac[5]);
+    Bluefruit.getAddr(mac);
+    // MAC bytes are stored in reverse order; use the low two bytes for the suffix
+    snprintf(bleName, sizeof(bleName), "softwear-%02X%02X", mac[1], mac[0]);
   }
+  Bluefruit.setName(bleName);
+  Bluefruit.Periph.setConnectCallback(onBleConnect);
+  Bluefruit.Periph.setDisconnectCallback(onBleDisconnect);
 
-  BLEDevice::init(bleName);
-  BLEServer  *pServer  = BLEDevice::createServer();
-  pServer->setCallbacks(new ServerCallbacks());
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  // Service + characteristics
+  svcPet.begin();
 
-  BLECharacteristic *pWriteChar = pService->createCharacteristic(
-    CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_WRITE);
-  pWriteChar->setCallbacks(new MyCallbacks());
+  chrWrite.setProperties(CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
+  chrWrite.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  chrWrite.setMaxLen(32);
+  chrWrite.setWriteCallback(onWriteCommand);
+  chrWrite.begin();
 
-  pNotifyChar = pService->createCharacteristic(
-    NOTIFY_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pNotifyChar->addDescriptor(new BLE2902());
+  chrNotify.setProperties(CHR_PROPS_NOTIFY);
+  // Both open — value read is via notify, but the CCCD (enable notify) needs write access
+  chrNotify.setPermission(SECMODE_OPEN, SECMODE_OPEN);
+  chrNotify.setMaxLen(32);
+  chrNotify.begin();
 
-  BLECharacteristic *pPetIdChar = pService->createCharacteristic(
-    PETID_UUID, BLECharacteristic::PROPERTY_READ);
-  pPetIdChar->setValue(PET_ID);
+  chrPetId.setProperties(CHR_PROPS_READ);
+  chrPetId.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  chrPetId.setMaxLen(strlen(PET_ID));
+  chrPetId.begin();
+  chrPetId.write(PET_ID, strlen(PET_ID));
 
-  BLECharacteristic *pDeviceTypeChar = pService->createCharacteristic(
-    DEVICETYPE_UUID, BLECharacteristic::PROPERTY_READ);
-  pDeviceTypeChar->setValue(DEVICE_TYPE);
+  chrDeviceType.setProperties(CHR_PROPS_READ);
+  chrDeviceType.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  chrDeviceType.setMaxLen(strlen(DEVICE_TYPE));
+  chrDeviceType.begin();
+  chrDeviceType.write(DEVICE_TYPE, strlen(DEVICE_TYPE));
 
-  pService->start();
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->start();
-  advertisingStartTime = millis();    // for 5-sec window cutoff (see loop)
+  // Advertising
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addService(svcPet);
+  Bluefruit.Advertising.addName();
+  Bluefruit.Advertising.restartOnDisconnect(false);   // We control this manually
+  Bluefruit.Advertising.setInterval(160, 244);        // 100–152.5 ms (units of 0.625 ms)
+  Bluefruit.Advertising.setFastTimeout(30);
+  Bluefruit.Advertising.start(0);                     // 0 = indefinite; loop() enforces window
+  advertisingStartTime = millis();
 
   lastPersistTime = millis();
+  LOG("Setup complete");
 }
 
 /* ---------------- LOOP ---------------- */
 void loop() {
   unsigned long now = millis();
 
-  // 0. BLE advertising window cutoff — stop advertising after 5 sec to save battery.
-  //    Restarts on disconnect (see ServerCallbacks::onDisconnect).
+  // 0. BLE advertising window cutoff — stop after 5 sec to save battery
   if (advertisingActive && !bleConnected && now - advertisingStartTime > ADVERTISING_WINDOW) {
-    BLEDevice::getAdvertising()->stop();
+    Bluefruit.Advertising.stop();
     advertisingActive = false;
+    LOG("Advertising stopped (5-sec window elapsed)");
   }
 
   // 1. MOOD LOGIC
@@ -501,7 +579,7 @@ void loop() {
   else {
     petMood = PET_NORMAL;
     if (!isTransitioning && now - lastStateChangeTime > (unsigned long)random(3000, 7000)) {
-      EyeState pick = (EyeState)random(STATE_EXCITED + 1);  // states 0..8 (idle pool)
+      EyeState pick = (EyeState)random(STATE_EXCITED + 1);
       setEyeState(pick);
       lastStateChangeTime = now;
     }
@@ -525,12 +603,12 @@ void loop() {
   updateHungerShake(now);
   updateExcitedBounce(now);
 
-  // 5. BLINK — disabled while feeding; hungry blinks slowly; starving blinks only when calm
+  // 5. BLINK
   if (petMood != PET_FEEDING && !(petMood == PET_STARVING && shakeBurstActive)) {
     unsigned long blinkInterval = (petMood == PET_HUNGRY || petMood == PET_STARVING)
       ? (unsigned long)random(6000, 10000)
       : (currentEyeState == STATE_EXCITED)
-        ? (unsigned long)random(400, 900)   // rapid blinking when excited
+        ? (unsigned long)random(400, 900)
         : (unsigned long)random(2000, 5000);
     if (!isBlinking && now - lastBlinkTime > blinkInterval) {
       isBlinking = true; blinkState = 1; lastBlinkTime = now;
@@ -573,12 +651,10 @@ void loop() {
   drawFilledEllipse(lxDraw, eyeY + (int)leftOffsetY  + bounce, leftEyeWidth,  leftEyeHeight  * openness, leftAngle);
   drawFilledEllipse(rxDraw, eyeY + (int)rightOffsetY + bounce, rightEyeWidth, rightEyeHeight * openness, rightAngle);
 
-  // Stars only when recovering from hunger
   if (petMood == PET_FEEDING && feedShowStars) {
     renderStars(now);
   }
 
-  // BLE connection status text — shown briefly on connect/disconnect
   if (now < bleStatusShowUntil) {
     const char* msg = bleConnected ? "connected" : "disconnected";
     u8g2.setFont(u8g2_font_6x10_tf);
