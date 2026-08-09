@@ -1,8 +1,8 @@
 # softwear.pet — Technical Reference
 
-Complete functional spec for the Walking Tracker app + ESP32 firmware.
+Complete functional spec for the Walking Tracker app + pet firmware.
 
-> **Maintenance:** keep this doc in sync after every functionality addition or change to either the app or the ESP32 firmware. Cross-reference [project_launch_checklist](.claude/memory/project_launch_checklist.md) and [project_leaderboard_plan](.claude/memory/project_leaderboard_plan.md) when planning.
+> **Maintenance:** keep this doc in sync after every functionality addition or change to either the app or the pet firmware. Cross-reference [project_launch_checklist](.claude/memory/project_launch_checklist.md) and [project_leaderboard_plan](.claude/memory/project_leaderboard_plan.md) when planning.
 
 ---
 
@@ -12,16 +12,23 @@ Complete functional spec for the Walking Tracker app + ESP32 firmware.
 
 **Stack**
 - **App:** React Native (Android first, iOS deferred)
-- **Hardware:** ESP32-C3 with OLED, BLE peripheral
+- **Hardware:** Two firmware ports of the same pet — XIAO ESP32-C3 (original) and XIAO nRF52840 (current, better battery life). Both use identical BLE wire protocol, so the app is agnostic to which chip is inside.
 - **Cloud:** Firebase Anonymous Auth + Firestore (Spark free tier today)
 
 **Identity model:** pet-centric. ESP32 Pet ID = account. Pet device IS the password.
 
 ---
 
-## 2. ESP32 Firmware
+## 2. Pet Firmware
 
-File: [esp32/src/main.cpp](esp32/src/main.cpp)
+Two implementations exist. Both **preserve identical BLE UUIDs, command strings, and notify payloads** so the app doesn't care which one is inside.
+
+| Firmware | File | Status | Notes |
+|---|---|---|---|
+| ESP32-C3 (original) | [esp32c3/src/main.cpp](esp32c3/src/main.cpp) | maintained | Two build envs (`dev` / `battery`) via `pio run -e <env>` |
+| nRF52840 (current) | [nrf52840/src/main.cpp](nrf52840/src/main.cpp) | active port | Better BLE power efficiency (~3-6× longer battery life). Same two envs. Uses Bluefruit BLE + InternalFS/LittleFS + TinyUSB CDC |
+
+The sections below describe the shared functional spec; where the implementation differs, both are noted.
 
 ### 2.1 Unique device identifiers (set per unit at flash time)
 
@@ -78,14 +85,14 @@ Received via BLE write characteristic:
 - **`CONNECTED`** → device immediately replies with current mood state via NOTIFY
 - **`NAME:<newName>`** → updates BLE advertising name + persists to NVS
 
-### 2.6 Persistence (NVS / Preferences)
+### 2.6 Persistence
 
-| Namespace | Key | Stored |
+| Chip | Backend | Files/keys |
 |---|---|---|
-| `pet` | `elapsed` | Hunger elapsed time in ms (saved every 5s during HUNGRY/STARVING) |
-| `pet` | (device name) | Custom BLE name from `NAME:*` command |
+| ESP32-C3 | `Preferences` (NVS) | Namespace `pet`, keys `elapsed` + device name |
+| nRF52840 | `InternalFS` (LittleFS) | Files `elapsed.bin` + `devname.txt` |
 
-Hunger restores across power-off — device knows mood state on boot.
+Same semantics on both: hunger elapsed time saved every 5s during HUNGRY/STARVING, custom device name saved on `NAME:*` command. Hunger state restores across power-off — device knows mood on boot.
 
 ---
 
@@ -428,6 +435,7 @@ Two implementation approaches:
 **Default pet color:** `#EE5514` (orange)
 **Bottom nav:** floating black rounded-rectangle pill with Feather icons
 **No app header** (removed; settings moved into bottom nav)
+**Active firmware:** nRF52840 port complete and verified on hardware (BLE, FEED, notifications, persistence, Pet ID, USB CDC). ESP32-C3 firmware still maintained as reference/fallback. See §2 for both file paths.
 
 ---
 
@@ -446,6 +454,7 @@ Two implementation approaches:
 - **Focus mode — trade steps for screen time** (see §12 for full spec)
 - **Community Mode — pet-to-pet social via BLE** (see §13 for full spec)
 - **POST_NOTIFICATIONS runtime request** (see §6.4) — declared in manifest but not requested in onboarding; needed for Android 13+ before any user-fired notifications will appear
+- **Battery % on OLED + BLE characteristic** — requires 2× 1MΩ voltage divider on any ADC pin (see §14.6). No external components needed beyond the resistors. Applies to both ESP32-C3 and nRF52840 firmware.
 
 See [project_pending_features](.claude/memory/project_pending_features.md), [project_launch_checklist](.claude/memory/project_launch_checklist.md), and [project_share_photo_feature](.claude/memory/project_share_photo_feature.md) for details.
 
@@ -1283,3 +1292,48 @@ For the perfboard or PCB prototype:
 3. **Add I²C rails** — 4 wires (3V3, GND, SDA, SCL) that fan out to each device. Physically bridge them at a single row/column on the perfboard.
 4. **Add each I²C device one at a time**, running the I²C scanner after each addition. Confirm the new address appears before moving on.
 5. **Test firmware end-to-end** — OLED animates, BMA400 counts steps, MAX30102 reports HR when finger applied.
+
+---
+
+### 14.6 Battery % monitoring — voltage divider
+
+Applies to **both** ESP32-C3 and nRF52840. Neither chip can measure battery voltage directly (the onboard LDO regulates VDD to 3.3V regardless of battery state), so a simple resistor divider is required.
+
+**Parts**
+- 2× 1 MΩ resistors (through-hole 1/8W or SMD 0603 — value matters more than package)
+
+**Wiring**
+```
+Battery (+) ──► R1 (1 MΩ) ──┬──► ADC pin (e.g. XIAO A0)
+                             │
+                             R2 (1 MΩ)
+                             │
+                            GND
+```
+
+Tap the divider **after the slide switch**, on the VUSB rail — that way the divider draws no current when the pet is off.
+
+**Why 1 MΩ specifically:** the divider draws only ~2 µA continuously, negligible battery drain. Anything smaller (e.g. 10 kΩ) would draw ~200 µA constantly and shorten runtime.
+
+**Firmware (both chips, minor pin differences)**
+```cpp
+float readBatteryVoltage() {
+  int raw = analogRead(A0);
+  float pinVolts = raw * (3.3f / 1023.0f);
+  return pinVolts * 2.0f;              // undo the /2 divider
+}
+
+int batteryPercent() {
+  float v = readBatteryVoltage();
+  if (v >= 4.15f) return 100;
+  if (v <= 3.30f) return 0;
+  return (int)((v - 3.30f) / (4.15f - 3.30f) * 100.0f);
+}
+```
+
+**Display** — render on OLED as `85%` or a small battery-icon glyph. Read every ~5s, redraw only on change to avoid flicker. Also expose via a new BLE characteristic so the app can show it in the pet status UI.
+
+**Notes**
+- On ESP32-C3, average 5-10 samples per measurement — the ADC is noisier than the nRF52's
+- Calibrate the 4.15V / 3.30V endpoints against the specific LiPo cell in your build; different chemistries have slightly different discharge curves
+- Under load (BLE active) the voltage sags by ~50-100mV — accept this or measure during idle windows only
